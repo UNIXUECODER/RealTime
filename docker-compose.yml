@@ -1,0 +1,38 @@
+services:
+  app:
+    build: .
+    container_name: realtime-app
+    ports:
+      - "8080:8080"
+    depends_on:
+      - redis
+      - postgres
+    environment:
+      SPRING_PROFILES_ACTIVE: local
+
+  # Not used by application code yet (that starts in M1) — provisioned now so the
+  # full M0 environment matches what every later milestone will run against.
+  redis:
+    image: redis:7-alpine
+    container_name: realtime-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+
+  # Not used by application code yet (JPA/Flyway land in M5) — same reasoning as Redis above.
+  postgres:
+    image: postgres:16-alpine
+    container_name: realtime-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: realtime
+      POSTGRES_USER: realtime
+      POSTGRES_PASSWORD: realtime_dev_only # local dev only — replaced by Fly secrets in M10
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+
+volumes:
+  redis-data:
+  pg-data:

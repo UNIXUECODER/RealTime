@@ -1,0 +1,17 @@
+spring:
+  application:
+    name: realtime
+
+server:
+  port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # 'prometheus' is exposed now so M9 (Observability) has nothing to unlock later —
+        # metrics just won't be interesting until M1+ adds something to measure.
+        include: health, info, prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
