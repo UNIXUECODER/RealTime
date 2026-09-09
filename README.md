@@ -8,7 +8,7 @@ See [`realtime-architecture-spec.md`](./realtime-architecture-spec.md) for the f
 
 ## Status
 
-**M0 — Bootstrap.** No features yet — this milestone proves the environment: a Spring Boot app that starts cleanly alongside Redis and Postgres containers, with a working health endpoint. Business logic starts in M1.
+**M1 — Ingest-to-Stream Core.** Webhooks land in a per-channel Redis Stream, deduplicated by default (SHA-256 of channel + body — see `realtime-architecture-spec.md` §4). No auth yet, no live delivery yet — that's M2.
 
 ## Quickstart
 
@@ -25,11 +25,29 @@ curl localhost:8080/actuator/health
 
 ### Running locally without Docker
 
-Requires JDK 21 and Maven 3.9+ installed.
+Requires JDK 21 and Maven 3.9+ installed, plus a Redis instance reachable at `localhost:6379` (`docker-compose up redis` is the easiest way to get one).
 
 ```bash
 mvn spring-boot:run
 ```
+
+### Try the ingest path
+
+```bash
+curl -i -X POST localhost:8080/webhook/test \
+  -H "Content-Type: application/json" \
+  -d '{"type":"payment.succeeded","amount":4200}'
+# HTTP/1.1 202 Accepted
+
+redis-cli XRANGE stream:channel:test - +
+# 1) 1) "1725900000000-0"
+#    2) 1) "payload"
+#       2) "{\"type\":\"payment.succeeded\",\"amount\":4200}"
+#       3) "received_at"
+#       4) "2026-09-10T12:00:00.000Z"
+```
+
+Send the exact same payload again — it still returns `202`, but nothing new appears in `XRANGE`. That's the idempotency check working: the fingerprint was already seen, so the duplicate is acknowledged (so the sender stops retrying) without being re-added to the stream.
 
 ## Stack
 

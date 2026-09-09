@@ -9,9 +9,10 @@ services:
       - postgres
     environment:
       SPRING_PROFILES_ACTIVE: local
+      # Relaxed-binding override of spring.data.redis.host — inside the compose network,
+      # "redis" resolves to the redis service below, not localhost.
+      SPRING_DATA_REDIS_HOST: redis
 
-  # Not used by application code yet (that starts in M1) — provisioned now so the
-  # full M0 environment matches what every later milestone will run against.
   redis:
     image: redis:7-alpine
     container_name: realtime-redis

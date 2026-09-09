@@ -1,6 +1,14 @@
 spring:
   application:
     name: realtime
+  data:
+    redis:
+      host: localhost # overridden to `redis` inside docker-compose via SPRING_DATA_REDIS_HOST
+      port: 6379
+  codec:
+    # Safety cap on request body buffering, not the final word on oversized-payload
+    # handling — a clean 413 response for this case is M3 scope, not M1.
+    max-in-memory-size: 256KB
 
 server:
   port: 8080
@@ -15,3 +23,11 @@ management:
   endpoint:
     health:
       show-details: when-authorized
+
+realtime:
+  ingest:
+    # How long a webhook fingerprint is remembered for dedup purposes (spec §4).
+    # Sized to realistic sender retry windows (e.g. Stripe retries for up to 3 days),
+    # deliberately independent of the Redis Stream's own hot-retention window (spec §3) —
+    # two different concerns, two different numbers.
+    dedup-ttl: 3d

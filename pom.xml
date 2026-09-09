@@ -22,9 +22,10 @@
     </properties>
 
     <!--
-        M0 scope only: WebFlux (reactive foundation) + Actuator/Micrometer (health + metrics).
-        No Redis, JPA, or Security starters yet — those land in M1 and M5 respectively, so each
-        milestone's dependency diff maps cleanly to what that milestone actually builds.
+        M0: WebFlux (reactive foundation) + Actuator/Micrometer (health + metrics).
+        M1 adds: reactive Redis (Lettuce), for the ingest-to-stream pipeline.
+        JPA/Security still don't land until M5 — each milestone's dependency diff maps
+        cleanly to what that milestone actually builds.
     -->
     <dependencies>
         <dependency>
@@ -34,6 +35,10 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis-reactive</artifactId>
         </dependency>
         <dependency>
             <groupId>io.micrometer</groupId>
