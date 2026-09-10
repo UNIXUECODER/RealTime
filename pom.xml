@@ -24,6 +24,7 @@
     <!--
         M0: WebFlux (reactive foundation) + Actuator/Micrometer (health + metrics).
         M1 adds: reactive Redis (Lettuce), for the ingest-to-stream pipeline.
+        M3 adds: json-path, for channel-level filter rule evaluation.
         JPA/Security still don't land until M5 — each milestone's dependency diff maps
         cleanly to what that milestone actually builds.
     -->
@@ -43,6 +44,11 @@
         <dependency>
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.jayway.jsonpath</groupId>
+            <artifactId>json-path</artifactId>
+            <version>3.0.0</version>
         </dependency>
 
         <dependency>

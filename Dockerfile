@@ -14,7 +14,11 @@ RUN mvn -B package -DskipTests
 # ---- Runtime stage ----
 FROM eclipse-temurin:21-jre-alpine
 WORKDIR /app
+
+# Run as a non-root user — standard container hardening, no reason the JVM needs root.
+RUN addgroup -S app && adduser -S app -G app
 COPY --from=build /app/target/*.jar app.jar
+USER app
 
 EXPOSE 8080
 ENTRYPOINT ["java", "-jar", "app.jar"]

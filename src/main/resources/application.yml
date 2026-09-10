@@ -6,12 +6,18 @@ spring:
       host: localhost # overridden to `redis` inside docker-compose via SPRING_DATA_REDIS_HOST
       port: 6379
   codec:
-    # Safety cap on request body buffering, not the final word on oversized-payload
-    # handling — a clean 413 response for this case is M3 scope, not M1.
+    # Enforced as a clean 413 by GlobalErrorHandler (M3) rather than an unhandled error.
     max-in-memory-size: 256KB
+  lifecycle:
+    # How long graceful shutdown waits for in-flight work — including long-lived WS
+    # sessions (M2) — before forcing termination. Redis connections are closed as part
+    # of normal Spring context shutdown regardless, via LettuceConnectionFactory's own
+    # lifecycle hooks.
+    timeout-per-shutdown-phase: 20s
 
 server:
   port: 8080
+  shutdown: graceful
 
 management:
   endpoints:

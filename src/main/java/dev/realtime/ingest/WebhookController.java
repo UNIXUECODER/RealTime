@@ -1,5 +1,8 @@
 package dev.realtime.ingest;
 
+import com.jayway.jsonpath.InvalidJsonException;
+import com.jayway.jsonpath.JsonPath;
+
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -12,11 +15,13 @@ import org.springframework.web.server.ResponseStatusException;
 import reactor.core.publisher.Mono;
 
 /**
- * M1 scope only: accept a webhook, get it into the stream, exactly once.
+ * M1 scope: accept a webhook, get it into the stream, exactly once.
+ * M3 adds: reject malformed JSON up front (400), before it ever reaches the filter
+ * engine or gets stored — a channel filter rule assumes valid JSON, so validating here
+ * avoids a parse failure surfacing as an unhandled 500 deeper in the pipeline instead.
  *
  * <p>Deliberately out of scope here (see roadmap M1): no API key check on {@code
- * channelId} (any value is accepted — auth arrives in M5), no channel-level filtering
- * (M3), no structured error envelope or 413 handling (M3).
+ * channelId} (any value is accepted — auth arrives in M5).
  */
 @RestController
 @RequestMapping("/webhook")
@@ -40,10 +45,27 @@ public class WebhookController {
                         return Mono.error(new ResponseStatusException(
                                 HttpStatus.BAD_REQUEST, "Webhook body must not be empty"));
                     }
+                    if (!isValidJson(payload)) {
+                        return Mono.error(new ResponseStatusException(
+                                HttpStatus.BAD_REQUEST, "Webhook body must be valid JSON"));
+                    }
                     return ingestService.ingest(channelId, payload);
                 })
-                // Whether this was a fresh event or a deduped retry, the sender sees the
-                // same 202 — from their side, both outcomes mean "got it, stop retrying."
+                // Accepted, duplicate, or filtered — the sender always sees the same 202;
+                // from their side, every outcome here means "got it, stop retrying."
                 .thenReturn(ResponseEntity.status(HttpStatus.ACCEPTED).<Void>build());
     }
+
+    private boolean isValidJson(String payload) {
+        try {
+            // Reuses json-path's own parser rather than Jackson directly — after the
+            // Jackson 3 restructuring, better to lean on a code path already being
+            // exercised for filtering than on an uncertain corner of the new hierarchy.
+            JsonPath.parse(payload);
+            return true;
+        } catch (InvalidJsonException e) {
+            return false;
+        }
+    }
 }
+

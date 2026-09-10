@@ -8,7 +8,7 @@ See [`realtime-architecture-spec.md`](./realtime-architecture-spec.md) for the f
 
 ## Status
 
-**M2 — Live Fan-out + Gap-free Resume.** Connect over WebSocket to a channel, get events as they arrive, reconnect with `?last_id=` and pick up exactly where you left off — no gaps, no duplicates. See `realtime-architecture-spec.md` §3 for the design, and the class-level Javadoc on `ChannelWebSocketHandler` for a noted scope deviation (one XREAD loop per session for now, not the shared-reader-per-channel design the spec describes — deferred until load testing shows it's needed).
+**M3 — Channel Filtering + Pipeline Hardening.** Channel-level filter rules (JSONPath, AND-combined) gate what reaches the stream; every response carries an `X-Request-Id` correlated to the server log line for that request; malformed JSON and oversized bodies get clean 400/413s instead of unhandled errors. Filter rules are stored in-memory for now (`ChannelFilterStore`) — real persisted, tenant-scoped channels land in M5.
 
 ## Quickstart
 
@@ -69,6 +69,35 @@ Now the resume check — the actual point of M2:
 2. Send 3 more webhook events while disconnected.
 3. Reconnect with that ID: `websocat "ws://localhost:8080/ws/test?last_id=<that-id>"`.
 4. You should receive **exactly those 3 events, in order — no gap, no duplicates** — and then continue receiving anything sent after that live, with no visible transition between "catching up" and "live."
+
+### Try channel filtering
+
+```bash
+# Only accept events where type == "payment.failed"
+curl -X PUT localhost:8080/channels/test/filters \
+  -H "Content-Type: application/json" \
+  -d '[{"field":"type","op":"==","value":"payment.failed"}]'
+
+# This one is filtered out — never appears in XRANGE
+curl -X POST localhost:8080/webhook/test -d '{"type":"payment.succeeded"}'
+
+# This one passes the filter — appears in XRANGE as usual
+curl -X POST localhost:8080/webhook/test -d '{"type":"payment.failed"}'
+
+# Remove the filter
+curl -X DELETE localhost:8080/channels/test/filters
+```
+
+### Try error tracing
+
+```bash
+curl -i -X POST localhost:8080/webhook/test -d 'not valid json'
+# HTTP/1.1 400 Bad Request
+# X-Request-Id: <some-id>
+# {"requestId":"<some-id>","status":400,"error":"Bad Request","message":"Webhook body must be valid JSON",...}
+```
+
+The same `<some-id>` appears in the application log line for that request (`docker compose logs app`) — that's the point: a client-reported failure and a server log entry can always be tied together.
 
 ## Stack
 

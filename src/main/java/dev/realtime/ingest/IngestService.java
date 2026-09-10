@@ -2,20 +2,31 @@ package dev.realtime.ingest;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.stereotype.Service;
 
+import dev.realtime.filter.ChannelFilterStore;
+import dev.realtime.filter.FilterEngine;
+import dev.realtime.filter.FilterRule;
+
 import reactor.core.publisher.Mono;
 
 /**
- * Core of M1: get an event into the channel's Redis Stream, exactly once, with zero
- * cooperation required from the sender.
+ * Core of M1 (extended in M3 with filtering): get an event into the channel's Redis
+ * Stream, exactly once, with zero cooperation required from the sender — unless a
+ * channel filter rejects it first.
  *
- * <p>Two Redis operations, both intentional:
+ * <p>Order of operations, each intentional:
  * <ol>
+ *   <li>Channel filter evaluation (M3, spec §5) — cheap, in-memory, evaluated first so a
+ *       rejected event never consumes dedup key space or a Redis round-trip for
+ *       something about to be discarded anyway.</li>
  *   <li>{@code SET fingerprint:{hash} 1 NX EX <ttl>} — atomic check-and-set. If this key
  *       already existed, the event is a duplicate (a retried webhook delivery) and is
  *       deliberately <em>not</em> re-added (spec §4).</li>
@@ -26,31 +37,43 @@ import reactor.core.publisher.Mono;
 @Service
 public class IngestService {
 
+    private static final Logger log = LoggerFactory.getLogger(IngestService.class);
+
     private final ReactiveRedisTemplate<String, String> redis;
+    private final FilterEngine filterEngine;
+    private final ChannelFilterStore filterStore;
     private final Duration dedupTtl;
 
     public IngestService(
             ReactiveRedisTemplate<String, String> redis,
+            FilterEngine filterEngine,
+            ChannelFilterStore filterStore,
             @Value("${realtime.ingest.dedup-ttl}") Duration dedupTtl) {
         this.redis = redis;
+        this.filterEngine = filterEngine;
+        this.filterStore = filterStore;
         this.dedupTtl = dedupTtl;
     }
 
     /**
-     * Ingests one webhook payload for a channel.
-     *
-     * @return {@code true} if this was a new event (written to the stream), {@code false}
-     *         if it was a duplicate fingerprint within the dedup window and was
-     *         intentionally not re-added.
+     * Ingests one webhook payload for a channel. All three outcomes result in the same
+     * 202 to the sender (spec §6) — this return value exists for logging/observability,
+     * not to change the HTTP response shape.
      */
-    public Mono<Boolean> ingest(String channelId, String rawBody) {
+    public Mono<IngestOutcome> ingest(String channelId, String rawBody) {
+        List<FilterRule> rules = filterStore.getRules(channelId);
+        if (!filterEngine.matches(rawBody, rules)) {
+            log.debug("Event filtered for channel {}", channelId);
+            return Mono.just(IngestOutcome.FILTERED);
+        }
+
         String dedupKey = "fingerprint:" + Fingerprint.of(channelId, rawBody);
 
         return redis.opsForValue()
                 .setIfAbsent(dedupKey, "1", dedupTtl)
                 .flatMap(isNew -> isNew
-                        ? appendToStream(channelId, rawBody).thenReturn(true)
-                        : Mono.just(false));
+                        ? appendToStream(channelId, rawBody).thenReturn(IngestOutcome.ACCEPTED)
+                        : Mono.just(IngestOutcome.DUPLICATE));
     }
 
     private Mono<?> appendToStream(String channelId, String rawBody) {
@@ -62,3 +85,4 @@ public class IngestService {
         return redis.opsForStream().add(streamKey, fields);
     }
 }
+
