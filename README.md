@@ -8,7 +8,7 @@ See [`realtime-architecture-spec.md`](./realtime-architecture-spec.md) for the f
 
 ## Status
 
-**M1 — Ingest-to-Stream Core.** Webhooks land in a per-channel Redis Stream, deduplicated by default (SHA-256 of channel + body — see `realtime-architecture-spec.md` §4). No auth yet, no live delivery yet — that's M2.
+**M2 — Live Fan-out + Gap-free Resume.** Connect over WebSocket to a channel, get events as they arrive, reconnect with `?last_id=` and pick up exactly where you left off — no gaps, no duplicates. See `realtime-architecture-spec.md` §3 for the design, and the class-level Javadoc on `ChannelWebSocketHandler` for a noted scope deviation (one XREAD loop per session for now, not the shared-reader-per-channel design the spec describes — deferred until load testing shows it's needed).
 
 ## Quickstart
 
@@ -48,6 +48,27 @@ redis-cli XRANGE stream:channel:test - +
 ```
 
 Send the exact same payload again — it still returns `202`, but nothing new appears in `XRANGE`. That's the idempotency check working: the fingerprint was already seen, so the duplicate is acknowledged (so the sender stops retrying) without being re-added to the stream.
+
+### Try live delivery + gap-free resume
+
+Requires a raw WebSocket client — [`websocat`](https://github.com/vi/websocat) is the easiest ("curl for WebSockets").
+
+```bash
+# Terminal 1 — connect fresh (no last_id = tail only, no history)
+websocat ws://localhost:8080/ws/test
+```
+
+```bash
+# Terminal 2 — send an event, watch it arrive in Terminal 1 immediately
+curl -X POST localhost:8080/webhook/test -d '{"type":"live.test"}'
+```
+
+Now the resume check — the actual point of M2:
+
+1. In Terminal 1, note the `"id"` from the last frame you received, then disconnect (Ctrl+C).
+2. Send 3 more webhook events while disconnected.
+3. Reconnect with that ID: `websocat "ws://localhost:8080/ws/test?last_id=<that-id>"`.
+4. You should receive **exactly those 3 events, in order — no gap, no duplicates** — and then continue receiving anything sent after that live, with no visible transition between "catching up" and "live."
 
 ## Stack
 
