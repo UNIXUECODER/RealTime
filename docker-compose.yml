@@ -5,13 +5,16 @@ services:
     ports:
       - "8080:8080"
     depends_on:
-      - redis
-      - postgres
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
     environment:
       SPRING_PROFILES_ACTIVE: local
-      # Relaxed-binding override of spring.data.redis.host — inside the compose network,
-      # "redis" resolves to the redis service below, not localhost.
+      # Relaxed-binding overrides — inside the compose network, service names resolve
+      # instead of localhost.
       SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/realtime
 
   redis:
     image: redis:7-alpine
@@ -20,8 +23,12 @@ services:
       - "6379:6379"
     volumes:
       - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
 
-  # Not used by application code yet (JPA/Flyway land in M5) — same reasoning as Redis above.
   postgres:
     image: postgres:16-alpine
     container_name: realtime-postgres
@@ -33,6 +40,11 @@ services:
       POSTGRES_PASSWORD: realtime_dev_only # local dev only — replaced by Fly secrets in M10
     volumes:
       - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U realtime -d realtime"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
 
 volumes:
   redis-data:

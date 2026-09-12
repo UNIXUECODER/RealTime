@@ -8,7 +8,7 @@ See [`realtime-architecture-spec.md`](./realtime-architecture-spec.md) for the f
 
 ## Status
 
-**M3 — Channel Filtering + Pipeline Hardening.** Channel-level filter rules (JSONPath, AND-combined) gate what reaches the stream; every response carries an `X-Request-Id` correlated to the server log line for that request; malformed JSON and oversized bodies get clean 400/413s instead of unhandled errors. Filter rules are stored in-memory for now (`ChannelFilterStore`) — real persisted, tenant-scoped channels land in M5.
+**M4 — Cold Archive + Retention.** Every ingested event is now also archived to Postgres (async, batched); a scheduled sweep enforces a 24h hot-retention window on each channel's Redis Stream via a real `XTRIM MINID` (time-based, not just an entry-count cap); the replay API (`GET /channels/{id}/events?since=`) transparently serves from Redis or Postgres depending on whether the requested range has been trimmed, with no visible difference to the caller.
 
 ## Quickstart
 
@@ -98,6 +98,19 @@ curl -i -X POST localhost:8080/webhook/test -d 'not valid json'
 ```
 
 The same `<some-id>` appears in the application log line for that request (`docker compose logs app`) — that's the point: a client-reported failure and a server log entry can always be tied together.
+
+### Try the replay API (and the hot → cold handoff)
+
+```bash
+# Send a couple of events to a fresh channel
+curl -X POST localhost:8080/webhook/m4-test -d '{"n":1}'
+curl -X POST localhost:8080/webhook/m4-test -d '{"n":2}'
+
+# Replay everything from the beginning — served entirely from the hot Redis Stream
+curl "localhost:8080/channels/m4-test/events?since=0"
+```
+
+To actually exercise the hot → cold handoff (M4's real exit criteria), force a trim in a test environment — e.g. temporarily set `realtime.archive.hot-window` to something tiny like `1s`, restart, wait a couple of seconds so the scheduled sweep trims everything, then call the same replay URL again. Wait a couple more seconds for `ArchiveWriter`'s flush cycle to have run first, or the events won't be in Postgres yet when they get trimmed from Redis. You should get back **the same events**, now served transparently from `events_archive` instead — nothing in the response shape gives away which tier actually served it.
 
 ## Stack
 

@@ -25,8 +25,11 @@
         M0: WebFlux (reactive foundation) + Actuator/Micrometer (health + metrics).
         M1 adds: reactive Redis (Lettuce), for the ingest-to-stream pipeline.
         M3 adds: json-path, for channel-level filter rule evaluation.
-        JPA/Security still don't land until M5 — each milestone's dependency diff maps
-        cleanly to what that milestone actually builds.
+        M4 adds: JPA + Postgres driver + Flyway, for the cold event archive. JPA is
+        blocking (per spec's core decision: WebFlux for the hot path, JPA for
+        CRUD/persistence) — used here wrapped in Schedulers.boundedElastic() rather than
+        introducing R2DBC as a second, parallel way of talking to Postgres.
+        Security still doesn't land until M5.
     -->
     <dependencies>
         <dependency>
@@ -40,6 +43,23 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-redis-reactive</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-flyway</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
         </dependency>
         <dependency>
             <groupId>io.micrometer</groupId>

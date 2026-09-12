@@ -14,6 +14,16 @@ spring:
     # of normal Spring context shutdown regardless, via LettuceConnectionFactory's own
     # lifecycle hooks.
     timeout-per-shutdown-phase: 20s
+  datasource:
+    url: jdbc:postgresql://localhost:5432/realtime # overridden via SPRING_DATASOURCE_URL in docker-compose
+    username: realtime
+    password: realtime_dev_only # local dev only — replaced by Fly secrets in M10, matches docker-compose.yml
+  jpa:
+    hibernate:
+      ddl-auto: validate # Flyway owns schema changes; Hibernate just confirms the entity mapping matches
+    open-in-view: false # doesn't apply to WebFlux's non-Servlet request lifecycle, but correct if it ever did
+  flyway:
+    enabled: true
 
 server:
   port: 8080
@@ -37,3 +47,12 @@ realtime:
     # deliberately independent of the Redis Stream's own hot-retention window (spec §3) —
     # two different concerns, two different numbers.
     dedup-ttl: 3d
+  archive:
+    # Redis Stream hot-retention window, enforced by RetentionTrimmer's scheduled
+    # XTRIM MINID sweep (spec §3) — uniform across every channel; the per-plan-tier
+    # replay window (7/30/90 days) is a Postgres archive-retention concern for M5, not
+    # this number.
+    hot-window: 24h
+    trim-interval: 1h
+    # How often ArchiveWriter flushes its in-memory buffer to Postgres as a batch.
+    flush-interval: 2s
