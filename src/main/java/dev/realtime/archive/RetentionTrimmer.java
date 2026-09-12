@@ -13,8 +13,12 @@ import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import dev.realtime.tenancy.Channel;
+import dev.realtime.tenancy.ChannelRepository;
+
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 /**
  * Enforces the Redis Stream hot-retention window via a scheduled {@code XTRIM MINID}
@@ -28,10 +32,12 @@ import reactor.core.publisher.Mono;
  * byte-precise cutoff, the right tradeoff for a periodic background sweep where being
  * off by a few entries at the boundary doesn't matter.
  *
- * <p>v1 limitation (deliberate, flagged): trims every channel it knows about via
- * {@link ChannelRegistry}, which only tracks channels seen since this instance started
- * (in-memory, like {@link dev.realtime.filter.ChannelFilterStore}) — a real registry of
- * every channel that ever existed arrives with M5's persisted channels.
+ * <p>As of M5, sweeps every real, persisted channel via {@link ChannelRepository} —
+ * closes the v1 limitation this class shipped with in M4 (previously relied on the
+ * in-memory {@link dev.realtime.filter.ChannelFilterStore}-style {@code
+ * ChannelRegistry}, which only knew about channels seen since the instance started).
+ * Consistent with M5 more broadly: since the webhook path now requires a real channel
+ * and a valid API key, there's no such thing as an ad-hoc channel to miss anymore.
  */
 @Component
 public class RetentionTrimmer {
@@ -39,21 +45,24 @@ public class RetentionTrimmer {
     private static final Logger log = LoggerFactory.getLogger(RetentionTrimmer.class);
 
     private final ReactiveRedisTemplate<String, String> redis;
-    private final ChannelRegistry channelRegistry;
+    private final ChannelRepository channelRepository;
     private final Duration hotWindow;
 
     public RetentionTrimmer(
             ReactiveRedisTemplate<String, String> redis,
-            ChannelRegistry channelRegistry,
+            ChannelRepository channelRepository,
             @Value("${realtime.archive.hot-window:24h}") Duration hotWindow) {
         this.redis = redis;
-        this.channelRegistry = channelRegistry;
+        this.channelRepository = channelRepository;
         this.hotWindow = hotWindow;
     }
 
     @Scheduled(fixedDelayString = "${realtime.archive.trim-interval:1h}")
     public void trim() {
-        Flux.fromIterable(channelRegistry.knownChannelIds())
+        Mono.fromCallable(channelRepository::findAll)
+                .subscribeOn(Schedulers.boundedElastic())
+                .flatMapMany(Flux::fromIterable)
+                .map(Channel::getPublicId)
                 .flatMap(this::trimChannel)
                 .subscribe();
     }
@@ -75,3 +84,4 @@ public class RetentionTrimmer {
                 });
     }
 }
+

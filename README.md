@@ -8,7 +8,7 @@ See [`realtime-architecture-spec.md`](./realtime-architecture-spec.md) for the f
 
 ## Status
 
-**M4 — Cold Archive + Retention.** Every ingested event is now also archived to Postgres (async, batched); a scheduled sweep enforces a 24h hot-retention window on each channel's Redis Stream via a real `XTRIM MINID` (time-based, not just an entry-count cap); the replay API (`GET /channels/{id}/events?since=`) transparently serves from Redis or Postgres depending on whether the requested range has been trimmed, with no visible difference to the caller.
+**M5 — Multi-Tenancy & Auth.** Real tenants, users, channels, and API keys — `POST /auth/signup` and `/auth/login` issue JWTs; channel CRUD (`/channels`) is tenant-scoped, enforced at the query layer (spec §10); the webhook path now requires a real channel and a valid `X-Api-Key`. `/ws/{channelId}`, replay, and filter-config remain unauthenticated for now — a deliberate, tracked scope boundary (see `realtime-architecture-spec.md` §14 and `realtime-build-log.md`), not an oversight. No dashboard UI yet — everything here is exercised via API calls.
 
 ## Quickstart
 
@@ -111,6 +111,43 @@ curl "localhost:8080/channels/m4-test/events?since=0"
 ```
 
 To actually exercise the hot → cold handoff (M4's real exit criteria), force a trim in a test environment — e.g. temporarily set `realtime.archive.hot-window` to something tiny like `1s`, restart, wait a couple of seconds so the scheduled sweep trims everything, then call the same replay URL again. Wait a couple more seconds for `ArchiveWriter`'s flush cycle to have run first, or the events won't be in Postgres yet when they get trimmed from Redis. You should get back **the same events**, now served transparently from `events_archive` instead — nothing in the response shape gives away which tier actually served it.
+
+### Try signup, channel creation, and tenant isolation
+
+```bash
+# Sign up two separate tenants
+TOKEN_A=$(curl -s -X POST localhost:8080/auth/signup \
+  -d '{"tenantName":"Tenant A","email":"a@example.com","password":"password123"}' | jq -r .token)
+
+TOKEN_B=$(curl -s -X POST localhost:8080/auth/signup \
+  -d '{"tenantName":"Tenant B","email":"b@example.com","password":"password123"}' | jq -r .token)
+
+# Tenant A creates a channel — note the returned apiKey, shown exactly once
+curl -X POST localhost:8080/channels \
+  -H "Authorization: Bearer $TOKEN_A" \
+  -d '{"name":"orders"}'
+# {"channelId":"<uuid>","name":"orders","apiKey":"rtk_..."}
+
+# Tenant B tries to read Tenant A's channel — the actual M5 exit criteria
+curl -i localhost:8080/channels/<tenant-a-channel-uuid> \
+  -H "Authorization: Bearer $TOKEN_B"
+# HTTP/1.1 404 Not Found — not 403. Indistinguishable from "this channel doesn't exist,"
+# by design: the API never confirms another tenant's channel IDs are even real.
+```
+
+### Try authenticated webhook ingest
+
+```bash
+# Missing key
+curl -i -X POST localhost:8080/webhook/<channel-uuid> -d '{"type":"test"}'
+# HTTP/1.1 401 Unauthorized
+
+# Real key from channel creation above
+curl -i -X POST localhost:8080/webhook/<channel-uuid> \
+  -H "X-Api-Key: rtk_..." \
+  -d '{"type":"test"}'
+# HTTP/1.1 202 Accepted
+```
 
 ## Stack
 

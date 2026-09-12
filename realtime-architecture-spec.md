@@ -230,3 +230,19 @@ Stating targets — even modest, honestly-scoped ones — is what separates a sp
 | Connection filter expressiveness | AND-only rule list, same DSL as channel filters | Ship the common case now; nested boolean logic is a fast-follow gated on real demand (§5) |
 
 No open decisions remain in this document. Future changes should be logged here with the same rationale format, so the spec stays a record of *why*, not just *what*.
+
+---
+
+## 14. Known Limitations & Flagged Follow-ups
+
+Living record of deliberate deviations and residual gaps between this spec's intended design and what's actually shipped, reviewed and updated as each milestone lands. See `realtime-build-log.md` for the full chronological story of how each one was found and fixed.
+
+| # | Area | Gap | Introduced | Status |
+|---|---|---|---|---|
+| 1 | Live fan-out (§3, §8) | One independent `XREAD` loop per WS session, not the shared-reader-per-channel design described in §8. Correct by construction (gap-free via `XREAD`'s exclusive-lower-bound semantics), but less efficient at scale — N sessions on a hot channel means N blocked Redis connections instead of one. | M2 | Deferred pending M10 load-test data |
+| 2 | Retention sweep (§3) | `RetentionTrimmer` only sweeps channels registered via the in-memory `ChannelRegistry` (seen since this instance started), not every channel that ever existed. | M4 | Resolved in M5 — `ChannelRegistry` replaced by the real `channels` table |
+| 3 | Cold archive precision (§7) | `events_archive.received_at` (Instant, millisecond precision) can't fully express a Redis stream ID's sequence-number-level exclusivity. Two events for the same channel landing in the same millisecond aren't perfectly disambiguated by a timestamp column alone; a full fix needs a sortable stream-ID column, not just a timestamp. | M4 | Open — rare in practice, not urgent |
+| 4 | Filter rule storage (§5) | Channel filter rules still live in the in-memory `ChannelFilterStore`, not persisted alongside the now-real `channels` table. A deliberate scope boundary — M5's own ships list doesn't include `filter_rules`, and it's more natural to migrate this once M6's dashboard needs to actually manage rules through a UI. | M3 (created), reassessed at M5 | Open — planned for M6 |
+| 5 | Auth coverage (§10) | M5 adds real tenant-scoped auth to channel CRUD and API-key validation to the webhook path, but `/ws/{channelId}`, `/channels/{id}/events` (replay), and `/channels/{id}/filters` remain unauthenticated — any raw channelId string is still accepted there, exactly as before M5. Matches M5's explicit roadmap scope ("auth/data layer only"); closing this gap is natural M6 work once the dashboard needs one coherent security story end-to-end. | M5 | Open — planned for M6 |
+| 6 | Auth error response shape (§10) | Spring Security's 401/403 responses (wrong/missing JWT) don't go through `GlobalErrorHandler` — Security operates at the `WebFilter` level, before requests ever reach controller/`@RestControllerAdvice` routing. They currently get Spring Security's bare default body instead of the structured `ErrorResponse` (with `X-Request-Id` correlation) every other error gets. | M5 | Open — good fit for M8 (Rate Limiting & Security Hardening) |
+

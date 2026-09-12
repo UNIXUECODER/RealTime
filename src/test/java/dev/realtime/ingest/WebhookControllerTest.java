@@ -1,21 +1,29 @@
 package dev.realtime.ingest;
 
+import java.time.Instant;
+
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webflux.test.autoconfigure.WebFluxTest;
+import org.springframework.http.HttpStatus;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.reactive.server.WebTestClient;
+import org.springframework.web.server.ResponseStatusException;
+
+import dev.realtime.tenancy.Channel;
 
 import reactor.core.publisher.Mono;
 
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.when;
 
 /**
- * Exercises the controller in isolation — {@link IngestService} is mocked, so these run
- * with no Redis dependency. The real end-to-end path (does an event actually land in the
- * stream, exactly once, filtered correctly) is verified manually: curl + redis-cli
- * (M1), and the two-client WS resume check (M2).
+ * Exercises the controller in isolation — {@link IngestService} and {@link
+ * WebhookAuthService} are both mocked, so these run with no Redis or Postgres
+ * dependency. The real end-to-end path (does an event actually land in the stream,
+ * exactly once, filtered and authenticated correctly) is verified manually.
  */
 @WebFluxTest(WebhookController.class)
 class WebhookControllerTest {
@@ -25,6 +33,20 @@ class WebhookControllerTest {
 
     @MockitoBean
     private IngestService ingestService;
+
+    @MockitoBean
+    private WebhookAuthService webhookAuthService;
+
+    @BeforeEach
+    void authSucceedsByDefault() {
+        // Every existing test here predates M5 and isn't testing auth — default to a
+        // successful authentication so they keep exercising exactly what they always did.
+        Channel channel = Channel.builder()
+                .id(1L).tenantId(1L).publicId("test-channel").name("test")
+                .retentionDays(7).createdAt(Instant.now())
+                .build();
+        when(webhookAuthService.authenticate(anyString(), any())).thenReturn(Mono.just(channel));
+    }
 
     @Test
     void blankBodyIsRejected() {
@@ -81,4 +103,30 @@ class WebhookControllerTest {
                 .exchange()
                 .expectStatus().isEqualTo(202);
     }
+
+    @Test
+    void missingApiKeyIsRejected() {
+        when(webhookAuthService.authenticate(anyString(), any())).thenReturn(
+                Mono.error(new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Missing API key")));
+
+        webTestClient.post()
+                .uri("/webhook/test-channel")
+                .bodyValue("{\"type\":\"test\"}")
+                .exchange()
+                .expectStatus().isUnauthorized();
+    }
+
+    @Test
+    void unknownChannelIsRejectedWithNotFound() {
+        when(webhookAuthService.authenticate(anyString(), any())).thenReturn(
+                Mono.error(new ResponseStatusException(HttpStatus.NOT_FOUND, "Unknown channel")));
+
+        webTestClient.post()
+                .uri("/webhook/does-not-exist")
+                .header("X-Api-Key", "rtk_whatever")
+                .bodyValue("{\"type\":\"test\"}")
+                .exchange()
+                .expectStatus().isNotFound();
+    }
 }
+

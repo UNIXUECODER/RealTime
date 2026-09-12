@@ -14,7 +14,6 @@ import org.springframework.stereotype.Service;
 
 import dev.realtime.archive.ArchivedEvent;
 import dev.realtime.archive.ArchiveWriter;
-import dev.realtime.archive.ChannelRegistry;
 import dev.realtime.filter.ChannelFilterStore;
 import dev.realtime.filter.FilterEngine;
 import dev.realtime.filter.FilterRule;
@@ -22,9 +21,10 @@ import dev.realtime.filter.FilterRule;
 import reactor.core.publisher.Mono;
 
 /**
- * Core of M1 (extended in M3 with filtering, M4 with archiving): get an event into the
- * channel's Redis Stream, exactly once, with zero cooperation required from the sender
- * — unless a channel filter rejects it first.
+ * Core of M1 (extended in M3 with filtering, M4 with archiving, M5 with real channel
+ * validation upstream in {@link WebhookAuthService}): get an event into the channel's
+ * Redis Stream, exactly once, with zero cooperation required from the sender — unless a
+ * channel filter rejects it first.
  *
  * <p>Order of operations, each intentional:
  * <ol>
@@ -48,7 +48,6 @@ public class IngestService {
     private final ReactiveRedisTemplate<String, String> redis;
     private final FilterEngine filterEngine;
     private final ChannelFilterStore filterStore;
-    private final ChannelRegistry channelRegistry;
     private final ArchiveWriter archiveWriter;
     private final Duration dedupTtl;
 
@@ -56,13 +55,11 @@ public class IngestService {
             ReactiveRedisTemplate<String, String> redis,
             FilterEngine filterEngine,
             ChannelFilterStore filterStore,
-            ChannelRegistry channelRegistry,
             ArchiveWriter archiveWriter,
             @Value("${realtime.ingest.dedup-ttl}") Duration dedupTtl) {
         this.redis = redis;
         this.filterEngine = filterEngine;
         this.filterStore = filterStore;
-        this.channelRegistry = channelRegistry;
         this.archiveWriter = archiveWriter;
         this.dedupTtl = dedupTtl;
     }
@@ -73,8 +70,6 @@ public class IngestService {
      * not to change the HTTP response shape.
      */
     public Mono<IngestOutcome> ingest(String channelId, String rawBody) {
-        channelRegistry.register(channelId);
-
         List<FilterRule> rules = filterStore.getRules(channelId);
         if (!filterEngine.matches(rawBody, rules)) {
             log.debug("Event filtered for channel {}", channelId);
