@@ -12,3 +12,8 @@ target/
 *.log
 
 HELP.md
+
+# Manual verification scratch files
+.m6a_peer_tmp/
+tmp_body.json
+*.patch

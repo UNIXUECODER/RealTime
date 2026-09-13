@@ -13,16 +13,23 @@ import org.springframework.data.redis.connection.stream.StreamOffset;
 import org.springframework.data.redis.connection.stream.StreamReadOptions;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.stereotype.Component;
+import org.springframework.web.reactive.socket.CloseStatus;
 import org.springframework.web.reactive.socket.WebSocketHandler;
 import org.springframework.web.reactive.socket.WebSocketMessage;
 import org.springframework.web.reactive.socket.WebSocketSession;
 import org.springframework.web.util.UriComponentsBuilder;
+
+import dev.realtime.auth.ChannelAccessService;
 
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 /**
  * M2 core: live delivery from a channel's Redis Stream, with gap-free resume.
+ * M6a adds: JWT auth via a {@code ?token=} query param, since browsers can't set
+ * custom headers on a WebSocket handshake — see {@link ChannelAccessService} for why
+ * this is handled manually here rather than through Spring Security's normal
+ * header-based mechanism.
  *
  * <p><b>Scope note (deliberate deviation from spec §3/§8):</b> this implementation gives
  * each WebSocket session its own independent {@code XREAD} loop, rather than one shared
@@ -32,10 +39,6 @@ import reactor.core.publisher.Mono;
  * splicing between them. The shared-reader optimization the spec describes stays the
  * long-term target — it's deferred until M10's load test shows it's actually needed,
  * rather than built speculatively now at real correctness risk.
- *
- * <p>Not in scope here (see roadmap M2): auth on channelId, channel/connection filtering,
- * falling back to the Postgres archive for resumes older than the stream's hot window
- * (that's M4).
  */
 @Component
 public class ChannelWebSocketHandler implements WebSocketHandler {
@@ -47,16 +50,30 @@ public class ChannelWebSocketHandler implements WebSocketHandler {
 
     private final ReactiveRedisTemplate<String, String> redis;
     private final ObjectMapper objectMapper;
+    private final ChannelAccessService channelAccessService;
 
-    public ChannelWebSocketHandler(ReactiveRedisTemplate<String, String> redis, ObjectMapper objectMapper) {
+    public ChannelWebSocketHandler(
+            ReactiveRedisTemplate<String, String> redis,
+            ObjectMapper objectMapper,
+            ChannelAccessService channelAccessService) {
         this.redis = redis;
         this.objectMapper = objectMapper;
+        this.channelAccessService = channelAccessService;
     }
 
     @Override
     public Mono<Void> handle(WebSocketSession session) {
         String channelId = channelIdFrom(session);
-        String lastId = lastIdFrom(session);
+        String token = queryParam(session, "token");
+
+        return channelAccessService.hasAccess(channelId, token)
+                .flatMap(authorized -> authorized
+                        ? stream(session, channelId)
+                        : session.close(new CloseStatus(4401, "Unauthorized")));
+    }
+
+    private Mono<Void> stream(WebSocketSession session, String channelId) {
+        String lastId = queryParam(session, "last_id");
         String streamKey = "stream:channel:" + channelId;
 
         Flux<WebSocketMessage> outbound = tail(streamKey, lastId)
@@ -74,11 +91,11 @@ public class ChannelWebSocketHandler implements WebSocketHandler {
         return path.substring(path.lastIndexOf('/') + 1);
     }
 
-    private String lastIdFrom(WebSocketSession session) {
+    private String queryParam(WebSocketSession session, String name) {
         return UriComponentsBuilder.fromUri(session.getHandshakeInfo().getUri())
                 .build()
                 .getQueryParams()
-                .getFirst("last_id");
+                .getFirst(name);
     }
 
     /**
@@ -121,3 +138,4 @@ public class ChannelWebSocketHandler implements WebSocketHandler {
         }
     }
 }
+

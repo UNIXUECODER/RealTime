@@ -14,7 +14,7 @@ Each entry has four parts:
 
 ## M0 — Bootstrap
 
-**Ships:** Repo scaffold, Spring Boot 3.3 project skeleton, `docker-compose.yml` with app + Redis + Postgres containers (empty schemas for now), `.gitignore`/`.editorconfig`/`LICENSE`, health endpoint via Actuator.
+**Ships:** Repo scaffold, Spring Boot project skeleton (Spring Boot 4.1.x — the plan's original 3.3.x pin was updated at build time; see `realtime-build-log.md`, M0), `docker-compose.yml` with app + Redis + Postgres containers (empty schemas for now), `.gitignore`/`.editorconfig`/`LICENSE`, health endpoint via Actuator.
 
 **Explicitly not in scope:** Any business logic. No webhook endpoint, no WS handler, no auth. This milestone proves the environment, nothing else.
 
@@ -52,7 +52,7 @@ Each entry has four parts:
 
 **Ships:** Channel-level filter rules (JsonPath, AND-combined) gating what reaches `XADD`; proper error responses (400 on bad JSON, 413 on oversized body, 500 with a trace ID on failure); request tracing (`X-Request-Id`); graceful shutdown of WS sessions and Redis connections; Dockerfile finalized as a multi-stage build.
 
-**Explicitly not in scope:** A UI for managing filter rules — configure them directly via seed data or a raw insert for now. The dashboard comes in M6.
+**Explicitly not in scope:** A UI for managing filter rules — configure them directly via seed data or a raw insert for now. The dashboard comes in M6b.
 
 **Exit criteria:** An event that fails a channel's filter rule never appears in the stream. A malformed JSON body returns 400 with a request ID in the response header, and that same ID appears in the server log line for the error.
 
@@ -84,7 +84,30 @@ Each entry has four parts:
 
 ---
 
-## M6 — Dashboard MVP
+## M6a — Close the Auth Gap + Pre-UI Hardening
+
+**Why this exists:** M5 deliberately left `/ws/{channelId}`, replay, and filter-config unauthenticated (spec §14 item 5) — fine when everything was curl-and-inspect, not fine the moment a dashboard implies "show me *my* channel's live events." Building M6b's UI on top of that gap would mean visibly demoing something with a known hole in it, so this closes it first. An independent review (see `realtime-build-log.md`, M6a) also surfaced several real correctness/security bugs unrelated to the auth gap but in the same "harden before the UI exists" spirit — folded in here rather than scattered across later milestones for no reason other than when they happened to be found.
+
+**Ships:**
+- WS/replay/filter-config authentication: JWT accepted via a `?token=` query param for the WS handshake (browsers can't set custom headers on a WebSocket upgrade — this is the standard workaround, not a hack), tenant ownership verified inside `ChannelWebSocketHandler` and reused for replay/filter-config via the same `ChannelService.findOwned` pattern already used by channel CRUD.
+- Transactional integrity: `AuthService.signup` and `ChannelService.create` each do two related saves that need to succeed or fail together (orphaned tenant/channel otherwise) — wrapped via `TransactionTemplate` (plain `@Transactional` doesn't work here due to `Mono.fromCallable` self-invocation bypassing Spring's AOP proxy).
+- `ON DELETE CASCADE` on `api_keys.channel_id` (V3 migration) — deleting a channel currently throws, since every channel has an active key.
+- Signup's email-uniqueness check hardened against the check-then-save race: a concurrent duplicate now gets a clean 409 via a caught `DataIntegrityViolationException`, not a raw 500.
+- `ArchiveWriter`'s buffer gets a hard cap (drop + log at capacity, rather than growing unbounded if Postgres is down during heavy ingestion) and drains in a loop each cycle instead of one capped batch, so a burst clears promptly instead of trickling out over many scheduled intervals.
+- Input validation (`@NotBlank`/`@Email`) on signup/login/channel-creation request DTOs, via `spring-boot-starter-validation`.
+- Login's timing profile no longer leaks which emails are registered (always runs a password comparison, even for an unknown email).
+- API key comparison via `MessageDigest.isEqual`, not `String.equals` (defense in depth; SHA-256 pre-hashing already limits practical exploitability, but constant-time comparison is correct practice regardless).
+- Request DTOs holding passwords (`SignupRequest`, `LoginRequest`) get a custom `toString()` that redacts the password — Java records auto-generate a `toString()` over every field otherwise.
+
+**Explicitly not in scope:** Testcontainers/CI-friendly test infrastructure (real, tracked gap — `RealtimeApplicationTests` needs live Redis/Postgres today, which is exactly M10's job, not this milestone's). JVM tuning (M10). `X-Request-Id` propagation from an upstream proxy (only matters once one exists, i.e. M10's deployment) — doing it now would mean threading a shared resolved-ID exchange attribute through both the filter and `GlobalErrorHandler` for zero present benefit.
+
+**Exit criteria:** A JWT for Tenant A cannot open a WebSocket to, replay, or read/write filters on Tenant B's channel — same 404-not-403 standard as M5's channel CRUD. Two concurrent signups with the same email: one succeeds, one gets a clean 409, never a 500. Deleting a channel succeeds and removes its API key. A sustained burst of ingestion with Postgres stopped doesn't grow the app's memory unbounded, and resumes draining promptly once Postgres is back.
+
+**Depends on:** M5.
+
+---
+
+## M6b — Dashboard MVP
 
 **Ships:** Thymeleaf + HTMX pages: login, signup, channel list, channel detail (webhook URL, WS URL, masked API key, "send test event" button, live event panel).
 
@@ -92,7 +115,7 @@ Each entry has four parts:
 
 **Exit criteria:** A person with no prior explanation can sign up, create a channel, click "send test event," and watch it appear in the live panel — with you standing there saying nothing.
 
-**Depends on:** M5.
+**Depends on:** M6a.
 
 ---
 

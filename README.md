@@ -8,7 +8,7 @@ See [`realtime-architecture-spec.md`](./realtime-architecture-spec.md) for the f
 
 ## Status
 
-**M5 — Multi-Tenancy & Auth.** Real tenants, users, channels, and API keys — `POST /auth/signup` and `/auth/login` issue JWTs; channel CRUD (`/channels`) is tenant-scoped, enforced at the query layer (spec §10); the webhook path now requires a real channel and a valid `X-Api-Key`. `/ws/{channelId}`, replay, and filter-config remain unauthenticated for now — a deliberate, tracked scope boundary (see `realtime-architecture-spec.md` §14 and `realtime-build-log.md`), not an oversight. No dashboard UI yet — everything here is exercised via API calls.
+**M6a — Close the Auth Gap + Pre-UI Hardening.** `/ws/{channelId}`, replay, and filter-config now require the same tenant ownership every other `/channels/**` endpoint holds — WS auth arrives via a `?token=` query param (browsers can't set custom headers on a WebSocket handshake). Also folded in: transactional signup/channel-creation (no more orphaned rows on partial failure), a fixed cascading delete, a hardened signup race, a bounded archive buffer, input validation, and a closed login-timing side channel — see `realtime-build-log.md` (M6a) for the full list and reasoning. No UI yet — that's M6b.
 
 ## Quickstart
 
@@ -51,41 +51,46 @@ Send the exact same payload again — it still returns `202`, but nothing new ap
 
 ### Try live delivery + gap-free resume
 
-Requires a raw WebSocket client — [`websocat`](https://github.com/vi/websocat) is the easiest ("curl for WebSockets").
+Requires a raw WebSocket client — [`websocat`](https://github.com/vi/websocat) is the easiest ("curl for WebSockets"). As of M6a, this needs a real channel and a JWT — see "Try signup, channel creation, and tenant isolation" below to get both first.
 
 ```bash
 # Terminal 1 — connect fresh (no last_id = tail only, no history)
-websocat ws://localhost:8080/ws/test
+websocat "ws://localhost:8080/ws/<channel-uuid>?token=$TOKEN_A"
 ```
 
 ```bash
-# Terminal 2 — send an event, watch it arrive in Terminal 1 immediately
-curl -X POST localhost:8080/webhook/test -d '{"type":"live.test"}'
+# Terminal 2 — send an event (needs the channel's API key), watch it arrive in Terminal 1
+curl -X POST localhost:8080/webhook/<channel-uuid> -H "X-Api-Key: rtk_..." -d '{"type":"live.test"}'
 ```
 
 Now the resume check — the actual point of M2:
 
 1. In Terminal 1, note the `"id"` from the last frame you received, then disconnect (Ctrl+C).
 2. Send 3 more webhook events while disconnected.
-3. Reconnect with that ID: `websocat "ws://localhost:8080/ws/test?last_id=<that-id>"`.
+3. Reconnect with that ID: `websocat "ws://localhost:8080/ws/<channel-uuid>?token=$TOKEN_A&last_id=<that-id>"`.
 4. You should receive **exactly those 3 events, in order — no gap, no duplicates** — and then continue receiving anything sent after that live, with no visible transition between "catching up" and "live."
+
+Try connecting with `$TOKEN_B` (or no token at all) instead — the connection should close immediately with code `4401`, the actual M6a exit criteria for this endpoint.
 
 ### Try channel filtering
 
+As of M6a, this requires a real channel and its owning tenant's JWT (see "Try signup, channel creation, and tenant isolation" below for `$TOKEN_A` and a channel UUID) — any raw string channelId (like the `test` used in earlier examples) no longer works here.
+
 ```bash
 # Only accept events where type == "payment.failed"
-curl -X PUT localhost:8080/channels/test/filters \
+curl -X PUT localhost:8080/channels/<channel-uuid>/filters \
+  -H "Authorization: Bearer $TOKEN_A" \
   -H "Content-Type: application/json" \
   -d '[{"field":"type","op":"==","value":"payment.failed"}]'
 
 # This one is filtered out — never appears in XRANGE
-curl -X POST localhost:8080/webhook/test -d '{"type":"payment.succeeded"}'
+curl -X POST localhost:8080/webhook/<channel-uuid> -H "X-Api-Key: rtk_..." -d '{"type":"payment.succeeded"}'
 
 # This one passes the filter — appears in XRANGE as usual
-curl -X POST localhost:8080/webhook/test -d '{"type":"payment.failed"}'
+curl -X POST localhost:8080/webhook/<channel-uuid> -H "X-Api-Key: rtk_..." -d '{"type":"payment.failed"}'
 
 # Remove the filter
-curl -X DELETE localhost:8080/channels/test/filters
+curl -X DELETE localhost:8080/channels/<channel-uuid>/filters -H "Authorization: Bearer $TOKEN_A"
 ```
 
 ### Try error tracing
@@ -101,13 +106,15 @@ The same `<some-id>` appears in the application log line for that request (`dock
 
 ### Try the replay API (and the hot → cold handoff)
 
+As of M6a, this also requires the owning tenant's JWT — see "Try signup, channel creation, and tenant isolation" below for `$TOKEN_A`.
+
 ```bash
 # Send a couple of events to a fresh channel
-curl -X POST localhost:8080/webhook/m4-test -d '{"n":1}'
-curl -X POST localhost:8080/webhook/m4-test -d '{"n":2}'
+curl -X POST localhost:8080/webhook/<channel-uuid> -H "X-Api-Key: rtk_..." -d '{"n":1}'
+curl -X POST localhost:8080/webhook/<channel-uuid> -H "X-Api-Key: rtk_..." -d '{"n":2}'
 
 # Replay everything from the beginning — served entirely from the hot Redis Stream
-curl "localhost:8080/channels/m4-test/events?since=0"
+curl "localhost:8080/channels/<channel-uuid>/events?since=0" -H "Authorization: Bearer $TOKEN_A"
 ```
 
 To actually exercise the hot → cold handoff (M4's real exit criteria), force a trim in a test environment — e.g. temporarily set `realtime.archive.hot-window` to something tiny like `1s`, restart, wait a couple of seconds so the scheduled sweep trims everything, then call the same replay URL again. Wait a couple more seconds for `ArchiveWriter`'s flush cycle to have run first, or the events won't be in Postgres yet when they get trimmed from Redis. You should get back **the same events**, now served transparently from `events_archive` instead — nothing in the response shape gives away which tier actually served it.

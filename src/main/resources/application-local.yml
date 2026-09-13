@@ -1,0 +1,4 @@
+# Currently no local-only overrides needed — base application.yml plus environment
+# variables (see docker-compose.yml) cover local development. This file exists so
+# `SPRING_PROFILES_ACTIVE: local` (set in docker-compose.yml) has a real, findable
+# profile to correspond to, rather than silently activating a profile with no file.

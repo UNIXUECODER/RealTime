@@ -1,4 +1,7 @@
 package dev.realtime.tenancy;
 
-public record CreateChannelRequest(String name) {
+import jakarta.validation.constraints.NotBlank;
+
+public record CreateChannelRequest(@NotBlank String name) {
 }
+

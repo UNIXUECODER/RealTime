@@ -1,5 +1,7 @@
 package dev.realtime.auth;
 
+import jakarta.validation.Valid;
+
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -18,14 +20,15 @@ public class AuthController {
     }
 
     @PostMapping("/signup")
-    public Mono<AuthResponse> signup(@RequestBody SignupRequest request) {
+    public Mono<AuthResponse> signup(@Valid @RequestBody SignupRequest request) {
         return authService.signup(request.tenantName(), request.email(), request.password())
                 .map(AuthResponse::new);
     }
 
     @PostMapping("/login")
-    public Mono<AuthResponse> login(@RequestBody LoginRequest request) {
+    public Mono<AuthResponse> login(@Valid @RequestBody LoginRequest request) {
         return authService.login(request.email(), request.password())
                 .map(AuthResponse::new);
     }
 }
+
