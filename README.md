@@ -156,6 +156,25 @@ curl -i -X POST localhost:8080/webhook/<channel-uuid> \
 # HTTP/1.1 202 Accepted
 ```
 
+## Dashboard (M6b)
+
+A TypeScript SPA (Vite + React + Tailwind) lives in `frontend/`, separate from the
+Java project but built into it — its `npm run build` output lands directly in
+`src/main/resources/static`, which Spring Boot's WebFlux auto-configuration serves
+as-is. Same origin as the API, so there's no CORS configuration anywhere.
+
+```bash
+cd frontend
+npm install
+npm run dev     # dev server on :5173, proxies /auth, /channels, /ws to :8080
+npm run test    # vitest
+npm run build   # writes into ../src/main/resources/static
+```
+
+`npm run build` isn't wired into the Maven build yet — that's deliberately deferred
+to M10 alongside the rest of CI/CD (see `realtime-roadmap.md`). Until then, run it
+manually before starting the Spring Boot app if you want the dashboard served at `/`.
+
 ## Stack
 
 - **Java 21** / **Spring Boot 4.1.x**
@@ -163,6 +182,7 @@ curl -i -X POST localhost:8080/webhook/<channel-uuid> \
 - **Redis Streams** — hot event log, live fan-out, gap-free resume
 - **PostgreSQL** — tenants, config, cold event archive
 - **Micrometer + Prometheus** — metrics (wired up now, meaningful from M9 onward)
+- **Vite + React + TypeScript + Tailwind** — dashboard (M6b), built into the Java app's static resources
 
 ## License
 

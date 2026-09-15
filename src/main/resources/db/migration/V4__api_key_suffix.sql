@@ -1,0 +1,13 @@
+-- The dashboard (M6b) needs to show a masked API key (e.g. "rtk_...a1b2") on a channel
+-- visited after creation. keyHash alone can't support this — SHA-256 is one-way by
+-- design (see ApiKeyHasher), so the trailing characters of an already-hashed key can
+-- never be recovered from key_hash. This column stores only the last 4 characters of
+-- the raw key, captured once at creation, alongside the hash — the same pattern
+-- Stripe/GitHub/AWS use for exactly this reason: a 4-character suffix doesn't
+-- meaningfully weaken a 256-bit-entropy secret.
+--
+-- DEFAULT '????' backfills existing rows harmlessly: this is a dev database with no
+-- real customer keys, and the original raw key can't be recovered for a real backfill
+-- regardless (see above) — every row created before this migration simply displays as
+-- masked-with-unknown-suffix until its channel is recreated.
+ALTER TABLE api_keys ADD COLUMN key_suffix VARCHAR(4) NOT NULL DEFAULT '????';

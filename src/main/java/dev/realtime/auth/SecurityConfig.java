@@ -30,6 +30,14 @@ import org.springframework.security.web.server.authentication.AuthenticationWebF
  *       it stays {@code permitAll()} here and {@code ChannelAccessService} checks it
  *       manually inside {@code ChannelWebSocketHandler} instead — same architectural
  *       pattern as the webhook path's own API-key check.</li>
+ *   <li><b>Dashboard shell</b> ({@code /}, {@code /index.html}, {@code /assets/**},
+ *       {@code /app/**}, M6b): the React SPA's static files and client-side routes are
+ *       {@code permitAll()} for the same reason the login page itself has to be — the
+ *       bearer token doesn't exist yet on first load, so gating the shell would make it
+ *       impossible to ever reach a login form to get one. This grants no access to
+ *       actual tenant data: every real operation the dashboard performs still goes
+ *       through {@code /channels/**} (authenticated) or {@code /ws/**} (its own
+ *       {@code ?token=} check) exactly as before. The shell is public; the data isn't.</li>
  * </ul>
  */
 @Configuration
@@ -57,6 +65,9 @@ public class SecurityConfig {
                         // WS can't carry a bearer header — permitAll() here is
                         // deliberate, not a gap; see class Javadoc and ChannelAccessService.
                         .pathMatchers("/ws/**").permitAll()
+                        // Dashboard shell (M6b) — public by necessity (see class Javadoc);
+                        // real data access still goes through the authenticated paths below.
+                        .pathMatchers("/", "/index.html", "/assets/**", "/app/**", "/favicon.svg").permitAll()
                         // As of M6a, every /channels/** path (CRUD, replay, filter-config
                         // alike) requires a valid JWT — no more sub-path carve-outs.
                         .pathMatchers("/channels/**").authenticated()

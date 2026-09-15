@@ -1,8 +1,5 @@
 package dev.realtime.ingest;
 
-import com.jayway.jsonpath.InvalidJsonException;
-import com.jayway.jsonpath.JsonPath;
-
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -39,18 +36,29 @@ public class WebhookController {
     public Mono<ResponseEntity<Void>> receive(
             @PathVariable String channelId,
             @RequestHeader(value = "X-Api-Key", required = false) String apiKey,
-            @RequestBody Mono<String> body) {
+            @RequestBody(required = false) Mono<String> body) {
 
+        // required = false matters here, not just for style: with the default
+        // required = true, a genuinely bodyless request (no Content-Length or
+        // Transfer-Encoding at all — distinct from an explicit empty-string body)
+        // makes Spring's argument resolver throw ServerWebInputException during
+        // argument resolution, before this method — including the defaultIfEmpty("")
+        // below — ever runs, surfacing as an unhandled 500 instead of the intended
+        // 400. Found while fixing the identical pattern on the M6b test-event endpoint;
+        // WebhookControllerTest's own "must not be empty" case only ever exercised an
+        // explicit empty string (.bodyValue("")), never a truly bodyless request, so
+        // this was unverified until now — see the added test below.
+        //
         // Auth runs before the body Mono is ever subscribed to — a rejected request
         // never triggers reading the request body at all.
         return webhookAuthService.authenticate(channelId, apiKey)
-                .then(body.defaultIfEmpty(""))
+                .then(body == null ? Mono.just("") : body.defaultIfEmpty(""))
                 .flatMap(payload -> {
                     if (payload.isBlank()) {
                         return Mono.error(new ResponseStatusException(
                                 HttpStatus.BAD_REQUEST, "Webhook body must not be empty"));
                     }
-                    if (!isValidJson(payload)) {
+                    if (!JsonValidator.isValid(payload)) {
                         return Mono.error(new ResponseStatusException(
                                 HttpStatus.BAD_REQUEST, "Webhook body must be valid JSON"));
                     }
@@ -59,18 +67,6 @@ public class WebhookController {
                 // Accepted, duplicate, or filtered — the sender always sees the same 202;
                 // from their side, every outcome here means "got it, stop retrying."
                 .thenReturn(ResponseEntity.status(HttpStatus.ACCEPTED).<Void>build());
-    }
-
-    private boolean isValidJson(String payload) {
-        try {
-            // Reuses json-path's own parser rather than Jackson directly — after the
-            // Jackson 3 restructuring, better to lean on a code path already being
-            // exercised for filtering than on an uncertain corner of the new hierarchy.
-            JsonPath.parse(payload);
-            return true;
-        } catch (InvalidJsonException e) {
-            return false;
-        }
     }
 }
 

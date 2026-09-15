@@ -58,6 +58,24 @@ class WebhookControllerTest {
     }
 
     @Test
+    void genuinelyBodylessRequestIsRejectedCleanlyNotWithA500() {
+        // Distinct from blankBodyIsRejected above: that sends an explicit empty-string
+        // body (Content-Length: 0), which a Mono<String> parameter resolves as
+        // Mono.empty() regardless of `required`. This sends no body at all — no
+        // Content-Length or Transfer-Encoding — which is the case
+        // @RequestBody(required = false) actually exists for: with the default
+        // required = true, Spring's argument resolver throws ServerWebInputException
+        // here during argument resolution, before this method body — including
+        // defaultIfEmpty("") — ever runs, surfacing as an unhandled 500 instead of the
+        // controller's own 400. Found while building M6b's test-event endpoint, which
+        // has the identical shape; this test is what was missing here all along.
+        webTestClient.post()
+                .uri("/webhook/test-channel")
+                .exchange()
+                .expectStatus().isBadRequest();
+    }
+
+    @Test
     void malformedJsonIsRejectedWithRequestId() {
         webTestClient.post()
                 .uri("/webhook/test-channel")

@@ -32,6 +32,12 @@ public class ApiKey {
     @Column(name = "key_hash", nullable = false)
     private String keyHash;
 
+    /** Last 4 characters of the raw key, captured once at creation, for masked display
+     * on the dashboard (e.g. "rtk_...a1b2") — see V4 migration for why this can't be
+     * derived from keyHash after the fact. Never used for authentication. */
+    @Column(name = "key_suffix", nullable = false, length = 4)
+    private String keySuffix;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 

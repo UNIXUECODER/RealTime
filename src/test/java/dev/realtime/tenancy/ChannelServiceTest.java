@@ -10,10 +10,15 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionStatus;
 import org.springframework.web.server.ResponseStatusException;
 
+import dev.realtime.ingest.IngestOutcome;
+import dev.realtime.ingest.IngestService;
+
+import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -22,22 +27,27 @@ import static org.mockito.Mockito.when;
  * Validates M6a fixes to {@link ChannelService}: transactional channel+API key
  * creation, and {@code requireOwnedChannel}'s tenant isolation logic (which is
  * now reused by {@code ReplayController} and {@code ChannelFilterController} too).
+ * M6b adds {@code sendTestEvent} coverage — it's built directly on top of the same
+ * {@code requireOwnedChannel} check, so the interesting case is that it inherits the
+ * same tenant-isolation guarantee, not that it needs to re-prove it from scratch.
  */
 class ChannelServiceTest {
 
     private ChannelRepository channelRepository;
     private ApiKeyRepository apiKeyRepository;
+    private IngestService ingestService;
     private ChannelService channelService;
 
     @BeforeEach
     void setUp() {
         channelRepository = mock(ChannelRepository.class);
         apiKeyRepository = mock(ApiKeyRepository.class);
+        ingestService = mock(IngestService.class);
 
         PlatformTransactionManager txManager = mock(PlatformTransactionManager.class);
         when(txManager.getTransaction(any())).thenReturn(mock(TransactionStatus.class));
 
-        channelService = new ChannelService(channelRepository, apiKeyRepository, txManager);
+        channelService = new ChannelService(channelRepository, apiKeyRepository, ingestService, txManager);
     }
 
     // ── Create ────────────────────────────────────────────────────────────────
@@ -131,5 +141,54 @@ class ChannelServiceTest {
                     assertThat(rse.getReason()).isEqualTo("Unknown channel");
                 })
                 .verify();
+    }
+
+    // ── sendTestEvent ─────────────────────────────────────────────────────────
+
+    @Test
+    void sendTestEventDelegatesToIngestServiceUsingTheChannelsPublicId() {
+        Channel channel = Channel.builder().id(1L).tenantId(10L).publicId("ch-uuid")
+                .name("test").retentionDays(7).createdAt(Instant.now()).build();
+        when(channelRepository.findByPublicId("ch-uuid")).thenReturn(Optional.of(channel));
+        when(ingestService.ingest(anyString(), anyString())).thenReturn(Mono.just(IngestOutcome.ACCEPTED));
+
+        StepVerifier.create(channelService.sendTestEvent(10L, "ch-uuid", "{\"type\":\"test\"}"))
+                .expectNext(IngestOutcome.ACCEPTED)
+                .verifyComplete();
+
+        verify(ingestService).ingest("ch-uuid", "{\"type\":\"test\"}");
+    }
+
+    @Test
+    void sendTestEventSurfacesFilteredAndDuplicateOutcomesUnchanged() {
+        // Unlike the public webhook path (which always returns a bare 202 regardless of
+        // outcome), this is a dashboard testing tool — FILTERED/DUPLICATE need to reach
+        // the caller as-is, not be swallowed into a generic success.
+        Channel channel = Channel.builder().id(1L).tenantId(10L).publicId("ch-uuid")
+                .name("test").retentionDays(7).createdAt(Instant.now()).build();
+        when(channelRepository.findByPublicId("ch-uuid")).thenReturn(Optional.of(channel));
+        when(ingestService.ingest(anyString(), anyString())).thenReturn(Mono.just(IngestOutcome.FILTERED));
+
+        StepVerifier.create(channelService.sendTestEvent(10L, "ch-uuid", "{\"type\":\"ignored\"}"))
+                .expectNext(IngestOutcome.FILTERED)
+                .verifyComplete();
+    }
+
+    @Test
+    void sendTestEventReturns404ForCrossTenantChannelWithoutCallingIngestService() {
+        // Same anti-enumeration guarantee as requireOwnedChannel itself — a test event
+        // aimed at someone else's channel must fail before it ever reaches ingest.
+        Channel channel = Channel.builder().id(1L).tenantId(10L).publicId("ch-uuid")
+                .name("test").retentionDays(7).createdAt(Instant.now()).build();
+        when(channelRepository.findByPublicId("ch-uuid")).thenReturn(Optional.of(channel));
+
+        StepVerifier.create(channelService.sendTestEvent(20L, "ch-uuid", "{}"))
+                .expectErrorSatisfies(ex -> {
+                    ResponseStatusException rse = (ResponseStatusException) ex;
+                    assertThat(rse.getStatusCode().value()).isEqualTo(HttpStatus.NOT_FOUND.value());
+                })
+                .verify();
+
+        verify(ingestService, org.mockito.Mockito.never()).ingest(any(), any());
     }
 }

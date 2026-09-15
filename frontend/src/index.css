@@ -1,0 +1,83 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens for the RealTime dashboard — an instrument panel for watching live
+ * event traffic, not a generic SaaS admin theme. See m6b-dashboard-blueprint.md §10
+ * for the reasoning behind these specific choices (deliberately not the near-black +
+ * acid-green combo that's become an AI-generated-dashboard tell).
+ */
+@theme {
+  --color-ink: #14151a;
+  --color-surface: #1c1e26;
+  --color-surface-raised: #23252f;
+  --color-border: #2a2d38;
+  --color-text: #e7e6e2;
+  --color-text-muted: #8b8d98;
+
+  /* Primary accent — a warm signal amber, not the generic vermilion/acid-green. Used
+     sparingly: primary actions, focus rings, the "live" indicator. */
+  --color-signal: #e8a33d;
+  --color-signal-dim: #6b5730;
+
+  /* Status colors are functional, not decorative — this is a monitoring tool, so
+     status *is* information. Each ingest outcome and connection state maps to exactly
+     one of these, consistently, everywhere in the app. */
+  --color-success: #5fb88b;
+  --color-error: #e5484d;
+  --color-filtered: #6e8fb0;
+  --color-duplicate: #9b8ac4;
+  --color-idle: #6b6d78;
+
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", monospace;
+
+  /* Sharp-ish corners throughout — an instrument panel has edges, not the rounded-card
+     kit. Reserved for larger elements; most controls use radius-sm. */
+  --radius-sm: 3px;
+  --radius-md: 5px;
+}
+
+body {
+  background-color: var(--color-ink);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+}
+
+/* The one deliberate ambient motion in the whole app — the live connection indicator's
+   breathing pulse. Tied directly to the product's actual value (this is real-time),
+   not decoration. See blueprint §10. */
+@keyframes pulse-signal {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* The other deliberate motion — a single sweep when a new event lands in the live
+   panel, so arrival is felt without every element in the UI animating on every render. */
+@keyframes sweep-in {
+  from {
+    background-color: color-mix(in srgb, var(--color-signal) 18%, transparent);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+
+/* Thin, quiet scrollbars for the dense event panel — a default scrollbar reads as
+   unfinished on an otherwise deliberate dark UI. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+.animate-pulse-signal {
+  animation: pulse-signal 2s ease-in-out infinite;
+}
+
+.animate-sweep-in {
+  animation: sweep-in 1.2s ease-out;
+}
