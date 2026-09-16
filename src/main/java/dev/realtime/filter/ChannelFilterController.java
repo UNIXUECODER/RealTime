@@ -44,13 +44,12 @@ public class ChannelFilterController {
     }
 
     @PutMapping
-    public Mono<Void> setRules(@PathVariable String channelId, @RequestBody List<FilterRule> rules) {
+    public Mono<Void> setRules(@PathVariable String channelId, @RequestBody(required = false) List<FilterRule> rules) {
         return verifyOwnership(channelId)
                 .then(Mono.fromRunnable(() -> {
-                    // Reject an unsupported operator here, at write time, rather than
-                    // letting it reach FilterEngine.matches on the ingest path later.
-                    filterEngine.validate(rules);
-                    store.setRules(channelId, rules);
+                    List<FilterRule> safeRules = rules == null ? List.of() : rules;
+                    filterEngine.validate(safeRules);
+                    store.setRules(channelId, safeRules);
                 }));
     }
 

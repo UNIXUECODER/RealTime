@@ -20,14 +20,33 @@ public class ChannelFilterStore {
     private final Map<String, List<FilterRule>> rulesByChannel = new ConcurrentHashMap<>();
 
     public void setRules(String channelId, List<FilterRule> rules) {
-        rulesByChannel.put(channelId, List.copyOf(rules));
+        if (channelId == null) {
+            return;
+        }
+        // Mirrors getRules's own null-safety below: a null list here means the same thing
+        // an absent one does to getRules — "no rules configured, match everything" —
+        // and filtering null elements protects against List.copyOf's NPE if any element is null.
+        if (rules == null) {
+            rulesByChannel.put(channelId, List.of());
+            return;
+        }
+        List<FilterRule> safeRules = rules.stream()
+                .filter(java.util.Objects::nonNull)
+                .toList();
+        rulesByChannel.put(channelId, safeRules);
     }
 
     public List<FilterRule> getRules(String channelId) {
+        if (channelId == null) {
+            return List.of();
+        }
         return rulesByChannel.getOrDefault(channelId, List.of());
     }
 
     public void clear(String channelId) {
+        if (channelId == null) {
+            return;
+        }
         rulesByChannel.remove(channelId);
     }
 }
