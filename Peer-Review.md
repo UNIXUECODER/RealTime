@@ -30,7 +30,7 @@ process, docs.
 | F-06 | WS resume has no Postgres fallback — "gap-free" ends at the hot window | High | M8 | Open |
 | F-07 | `coldRange` exclusive lower bound drops same-ms events | High | M6c | Open |
 | F-08 | Malformed `since`/`last_id` → 500 instead of 400 | High | M6c | Open |
-| F-09 | Null filter `field`/`value` → NPE on the ingest path | High | M6c | Open |
+| F-09 | Null filter `field`/`value` → NPE on the ingest path | High | Pre-M6c | Done (`38a4987`) |
 | F-10 | Filter persistence orphaned — no milestone owns it; multi-instance incorrect | High | M8 | Open |
 | F-11 | No WS heartbeat — proxies kill quiet connections in prod | High | M10 prerequisite | Open |
 | F-12 | No client auto-reconnect; no server retry in the poll loop | High | Client: ≤M9 · Server: M10 prereq | Open |
@@ -217,7 +217,7 @@ infrastructure (tickets, drain), or the M8 rate-limiting design.
 
 ### F-09 — Null filter `field`/`value` → NPE on the ingest path
 
-- **Severity:** High · **Recommended:** M6c · **Effort:** XS · **Docs to update:** none
+- **Severity:** High · **Recommended:** Pre-M6c · **Status:** Done (`38a4987`) · **Effort:** XS (actual: M) · **Docs to update:** spec §5, §14 row 10; `realtime-build-log.md`; `peer-review-triage.md`
 - **Description:** `validate()` checks only `op`. A stored rule with null `field`
   or `value` NPEs inside `extract()`/`matches()` on the *next third-party
   webhook* — a 500 to the sender for someone else's misconfiguration.
@@ -226,6 +226,10 @@ infrastructure (tickets, drain), or the M8 rate-limiting design.
 - **Suggested fix:** `validate()` rejects null/blank `field` and null `value`
   with 400; add PUT-with-null-field tests.
 - **Acceptance:** null-field PUT → 400; ingest after any stored rule set never NPEs.
+- **Resolution:** Fixed in `38a4987` before M6c. Expanded beyond the initial finding:
+  covers null/blank `field`, null `op`, null `value`, null element in array, null rules
+  list, `@RequestBody(required = false)` for literal `null` bodies, `MAX_RULES_PER_CHANNEL = 50`,
+  and write-time `JsonPath.compile()`. See `realtime-build-log.md` for the full multi-round writeup.
 
 ### F-10 — Filter persistence orphaned — no milestone owns it
 
