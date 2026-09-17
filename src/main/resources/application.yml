@@ -56,6 +56,13 @@ realtime:
     trim-interval: 1h
     # How often ArchiveWriter flushes its in-memory buffer to Postgres as a batch.
     flush-interval: 2s
+    # Approximate per-channel cap on the Redis Stream itself (M6c, F-01) — the safety
+    # net spec §3 always called for alongside the scheduled MINID sweep above. Without
+    # it, a bursty channel grows unbounded for up to trim-interval between sweeps; with
+    # no rate limiting until M8, that's an unbounded-until-M8 Redis memory exposure.
+    # "~" (approximateTrimming) trades byte-exact precision for letting Redis evict
+    # whole radix-tree macro-nodes — the same tradeoff RetentionTrimmer already makes.
+    stream-maxlen: 50000
   auth:
     # HS256 needs a key of at least 256 bits (32 bytes) — JJWT throws WeakKeyException
     # at first use otherwise. The fallback below is long enough and local-dev only;

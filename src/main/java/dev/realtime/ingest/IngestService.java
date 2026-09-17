@@ -8,6 +8,7 @@ import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.connection.RedisStreamCommands.XAddOptions;
 import org.springframework.data.redis.connection.stream.RecordId;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.stereotype.Service;
@@ -34,10 +35,13 @@ import reactor.core.publisher.Mono;
  *   <li>{@code SET fingerprint:{hash} 1 NX EX <ttl>} — atomic check-and-set. If this key
  *       already existed, the event is a duplicate (a retried webhook delivery) and is
  *       deliberately <em>not</em> re-added (spec §4).</li>
- *   <li>{@code XADD stream:channel:{id} * payload <body> received_at <instant>} — the
- *       single source of truth for both live fan-out (M2) and replay (M4), immediately
- *       followed by enqueueing the same event for async archiving (M4, spec §9 — best
- *       effort, never blocks this response).</li>
+ *   <li>{@code XADD stream:channel:{id} MAXLEN ~ <cap> * payload <body> received_at
+ *       <instant>} — the single source of truth for both live fan-out (M2) and replay
+ *       (M4), immediately followed by enqueueing the same event for async archiving
+ *       (M4, spec §9 — best effort, never blocks this response). The approximate
+ *       {@code MAXLEN} cap (M6c, F-01) is the safety net spec §3 always called for
+ *       alongside {@link dev.realtime.archive.RetentionTrimmer}'s scheduled sweep — a
+ *       bursty channel no longer grows unbounded for up to an hour between sweeps.</li>
  * </ol>
  */
 @Service
@@ -50,18 +54,24 @@ public class IngestService {
     private final ChannelFilterStore filterStore;
     private final ArchiveWriter archiveWriter;
     private final Duration dedupTtl;
+    private final long streamMaxlen;
 
     public IngestService(
             ReactiveRedisTemplate<String, String> redis,
             FilterEngine filterEngine,
             ChannelFilterStore filterStore,
             ArchiveWriter archiveWriter,
-            @Value("${realtime.ingest.dedup-ttl}") Duration dedupTtl) {
+            @Value("${realtime.ingest.dedup-ttl}") Duration dedupTtl,
+            @Value("${realtime.archive.stream-maxlen:50000}") long streamMaxlen) {
+        if (streamMaxlen <= 0) {
+            throw new IllegalArgumentException("streamMaxlen must be positive: " + streamMaxlen);
+        }
         this.redis = redis;
         this.filterEngine = filterEngine;
         this.filterStore = filterStore;
         this.archiveWriter = archiveWriter;
         this.dedupTtl = dedupTtl;
+        this.streamMaxlen = streamMaxlen;
     }
 
     /**
@@ -92,7 +102,8 @@ public class IngestService {
                 "payload", rawBody,
                 "received_at", receivedAt.toString());
 
-        return redis.opsForStream().add(streamKey, fields)
+        return redis.opsForStream()
+                .add(streamKey, fields, XAddOptions.maxlen(streamMaxlen).approximateTrimming(true))
                 .doOnNext(recordId -> archiveWriter.enqueue(ArchivedEvent.builder()
                         .channelId(channelId)
                         .redisStreamId(recordId.getValue())
