@@ -103,3 +103,21 @@ The peer-review triage doc estimated F-09 (null filter `field`/`value` → NPE) 
 
 Next: **M6c**.
 
+---
+
+## M6c (Batch 1) — F-01: Redis Stream Approximate MAXLEN Cap
+
+The first item of the M6c pre-M7 correctness and hardening batch addresses the missing approximate `MAXLEN` cap on the Redis Stream ingest path (spec §3, `Peer-Review.md` F-01).
+
+- **Spring Data Redis 4.1.1 API verified:** `ReactiveStreamOperations.add(K, Map, XAddOptions)` natively supports atomic appending with trimming options via `RedisStreamCommands.XAddOptions.maxlen(long).approximateTrimming(boolean)`. This emits native `XADD stream:channel:{id} MAXLEN ~ <cap> * payload <rawBody> received_at <instant>` in a single round-trip, requiring no custom Lua scripts or secondary `XTRIM` calls.
+- **Configurable cap with fallback:** Added `realtime.archive.stream-maxlen: 50000` to `application.yml` under `realtime.archive` and injected into `IngestService` via `@Value("${realtime.archive.stream-maxlen:50000}") long streamMaxlen`.
+- **Fail-fast startup validation:** Added defensive validation in `IngestService`'s constructor (`if (streamMaxlen <= 0) throw new IllegalArgumentException(...)`), ensuring invalid environment or profile overrides fail immediately at startup with an explanatory message rather than at runtime write time.
+- **Deliberate scope boundary maintained on Docker Compose (`docker-compose.yml`):** Reverted experimental `--maxmemory 256mb` flags on the compose Redis container. At ~25MB per channel at the 50k cap, an unmeasured 256MB dev limit would cause Redis to refuse writes with OOM after just ~10 channels under `noeviction`. Sizing Redis memory and formalizing eviction/persistence requirements is explicitly owned by **F-14 (M10)** against real load-test measurements.
+- **Spec §14 kept clean as an active gap tracker:** Kept spec §14 focused strictly on active unresolved technical debts and open deviations, rather than accumulating permanently resolved review findings. `Peer-Review.md` and this build log carry the permanent resolution history.
+- **Isolated unit tests added (`IngestServiceTest`):** Closes the `IngestService` portion of F-20 with 4 comprehensive unit tests: constructor rejection on non-positive cap, rigorous property assertions on the captured `XAddOptions` (`hasMaxlen() == true`, `getMaxlen() == 50000`, `isApproximateTrimming() == true`), `ArchiveWriter.enqueue()` verification on accepted events, duplicate fingerprint drop with no stream/archive writes, and filter drop with no dedup/stream/archive writes.
+- **Live wire-level verification against running Redis (`IngestServiceLiveRedisTest`):** Proved that `IngestService.appendToStream()`'s `XAddOptions` actually transmits `MAXLEN ~` over the wire through Lettuce Netty pipelines to the Redis 7 engine. Bursting 300 distinct events through `IngestService` into live Redis with a test cap of 100 yielded a final `XLEN` of **143** — well below the untrimmed 300, confirming trimming actually occurred on the wire, not just in the Java-level options object. The assertion deliberately doesn't pin an exact upper margin above the cap: approximate trimming only releases whole macro-nodes (Redis's documented default `stream-node-max-entries` is 100, an internal detail outside `XADD`'s contract and not something a test should assume), so the exact post-trim length is expected to vary by run — the test checks `xlen >= cap` (never over-trims) and `xlen < totalEvents` (growth wasn't unbounded), which is the actual acceptance criterion, without risking flakiness from guessing Redis's internals.
+- **Verification:** 106/106 tests passing cleanly across unit and live integration suites (`mvn test`).
+
+Next: **F-08 / F-07 / F-02**.
+
+

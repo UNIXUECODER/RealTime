@@ -22,7 +22,7 @@ process, docs.
 
 | ID | Title | Sev | Milestone | Status |
 |----|-------|-----|-----------|--------|
-| F-01 | `MAXLEN` safety cap never built — Redis OOM vector | Critical | M6c (proposed) | Open |
+| F-01 | `MAXLEN` safety cap never built — Redis OOM vector | Critical | M6c | Done (`0591d2e`) |
 | F-02 | Replay API unbounded — one request can OOM the server | Critical | M6c | Open |
 | F-03 | No API key rotation; `revoked_at` is dead schema | Critical | M8 | Open |
 | F-04 | Auth endpoints unthrottled (bcrypt CPU DoS + brute force) | Critical | M8, first | Open — already in M8, priority raised |
@@ -75,7 +75,7 @@ infrastructure (tickets, drain), or the M8 rate-limiting design.
 
 ### F-01 — `MAXLEN` safety cap never built — Redis OOM vector
 
-- **Severity:** Critical · **Recommended:** M6c · **Effort:** S · **Docs to update:** spec §14 (new row, then resolved)
+- **Severity:** Critical · **Recommended:** M6c · **Status:** Done (`0591d2e`) · **Effort:** S · **Docs to update:** spec §14 (new row, then resolved)
 - **Description:** Spec §3 mandates a two-tier trim: approximate `MAXLEN ~` safety
   cap *plus* the scheduled `MINID` sweep. Only the sweep (hourly) was built —
   `MAXLEN` appears in the spec 3× and in code 0×. A bursty channel grows unbounded
@@ -93,6 +93,9 @@ infrastructure (tickets, drain), or the M8 rate-limiting design.
      matches the intended prod posture (see F-14).
 - **Acceptance:** burst 200k events at one channel → `XLEN` stays ≈cap, Redis
   memory flat, other channels' ingest unaffected.
+- **Resolution:** Fixed in `0591d2e` as the first item of M6c. Added `realtime.archive.stream-maxlen: 50000`
+  to `application.yml` and bound via `@Value` in `IngestService`. `appendToStream` now appends with
+  `XAddOptions.maxlen(streamMaxlen).approximateTrimming(true)` natively supported in Spring Data Redis 4.1.1.
 
 ### F-02 — Replay API unbounded — one request can OOM the server
 
