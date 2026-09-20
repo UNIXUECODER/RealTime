@@ -2,11 +2,13 @@ package dev.realtime.archive;
 
 import java.util.List;
 
+import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
 
 import dev.realtime.auth.CurrentTenant;
 import dev.realtime.tenancy.ChannelService;
@@ -42,7 +44,16 @@ public class ReplayController {
             @RequestParam String since) {
         return currentTenant.id()
                 .flatMap(tenantId -> channelService.requireOwnedChannel(tenantId, channelId))
-                .then(replayService.replay(channelId, since));
+                .then(Mono.defer(() -> {
+                    // Write-time guard (F-08): without it, a malformed `since` reached
+                    // StreamIds.parse's Long.parseLong uncaught, surfacing as an opaque
+                    // 500 instead of a 400 naming the actual problem.
+                    if (!StreamIds.isValid(since)) {
+                        String sanitized = since.length() > 50 ? since.substring(0, 50) + "..." : since;
+                        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid stream ID format: " + sanitized);
+                    }
+                    return replayService.replay(channelId, since);
+                }));
     }
 }
 

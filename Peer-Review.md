@@ -29,7 +29,7 @@ process, docs.
 | F-05 | Shared Lettuce connection + `BLOCK` XREAD head-of-line risk | Critical | Verify pre-M7; fix M8/M10 | Open — needs verification |
 | F-06 | WS resume has no Postgres fallback — "gap-free" ends at the hot window | High | M8 | Open |
 | F-07 | `coldRange` exclusive lower bound drops same-ms events | High | M6c | Open |
-| F-08 | Malformed `since`/`last_id` → 500 instead of 400 | High | M6c | Open |
+| F-08 | Malformed `since`/`last_id` → 500 instead of 400 | High | M6c | Done |
 | F-09 | Null filter `field`/`value` → NPE on the ingest path | High | Pre-M6c | Done (`38a4987`) |
 | F-10 | Filter persistence orphaned — no milestone owns it; multi-instance incorrect | High | M8 | Open |
 | F-11 | No WS heartbeat — proxies kill quiet connections in prod | High | M10 prerequisite | Open |
@@ -208,7 +208,7 @@ infrastructure (tickets, drain), or the M8 rate-limiting design.
 
 ### F-08 — Malformed `since`/`last_id` → 500 instead of 400
 
-- **Severity:** High · **Recommended:** M6c · **Effort:** XS–S · **Docs to update:** none
+- **Severity:** High · **Recommended:** M6c · **Status:** Done · **Effort:** XS–S · **Docs to update:** none
 - **Description:** `StreamIds.parse` throws `NumberFormatException` on garbage
   input. `GET /events?since=abc` → unhandled 500 via the generic handler — the
   same "reject where written" class of bug already fixed for filter operators.
@@ -217,6 +217,7 @@ infrastructure (tickets, drain), or the M8 rate-limiting design.
   input; for WS `last_id`, close with a policy-violation code on garbage (or fall
   back to tail — decide and document).
 - **Acceptance:** garbage `since` → 400 with structured body; no 500s in logs.
+- **Resolution:** Added `StreamIds.isValid(String id)` delegating directly to `parse(String)` as the single source of truth for both REST replay (`ReplayController`) and WebSocket resume (`ChannelWebSocketHandler`). Hardened `StreamIds.parse()` with `CANONICAL_PATTERN` (`^\d+(-\d+)?$`) to reject negative sequence numbers (`1000--5`) and explicit plus signs (`+1000`), and enforced `MAX_TIMESTAMP_MILLIS = 9_223_372_000_000_000L` to prevent Postgres `TIMESTAMPTZ` out-of-range errors (SQLState 22008 / HTTP 500) for timestamps beyond ~294,276 AD. Hardened `ChannelWebSocketHandler` to close invalid `last_id` with RFC 6455-compliant code 4400 and static reason phrase `"Invalid last_id format"`, avoiding control frame payload overflow (>123 bytes UTF-8). Preserved tenant-isolation order of validation in both REST and WS. Covered with 9 controller-slice tests in `ReplayControllerTest`, 6 unit tests in `ChannelWebSocketHandlerTest`, and expanded `StreamIdsTest` boundary assertions.
 
 ### F-09 — Null filter `field`/`value` → NPE on the ingest path
 

@@ -19,6 +19,7 @@ import org.springframework.web.reactive.socket.WebSocketMessage;
 import org.springframework.web.reactive.socket.WebSocketSession;
 import org.springframework.web.util.UriComponentsBuilder;
 
+import dev.realtime.archive.StreamIds;
 import dev.realtime.auth.ChannelAccessService;
 
 import reactor.core.publisher.Flux;
@@ -72,8 +73,21 @@ public class ChannelWebSocketHandler implements WebSocketHandler {
                         : session.close(new CloseStatus(4401, "Unauthorized")));
     }
 
+    /**
+     * A blank/absent {@code last_id} means a fresh connection — no resume point to honor,
+     * so starting from tail is correct, not a fallback. A garbage {@code last_id} is
+     * different: the client explicitly asked to resume without gaps, so silently starting
+     * from tail instead would let it believe it resumed cleanly when it actually dropped
+     * everything since its last frame. M6c (F-08) closes with 4400 instead, mirroring
+     * 4401's existing pattern — explicit and clean, not a quiet substitution of intent.
+     */
     private Mono<Void> stream(WebSocketSession session, String channelId) {
         String lastId = queryParam(session, "last_id");
+
+        if (lastId != null && !lastId.isBlank() && !StreamIds.isValid(lastId)) {
+            return session.close(new CloseStatus(4400, "Invalid last_id format"));
+        }
+
         String streamKey = "stream:channel:" + channelId;
 
         Flux<WebSocketMessage> outbound = tail(streamKey, lastId)
