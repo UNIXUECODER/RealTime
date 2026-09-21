@@ -20,6 +20,7 @@ import dev.realtime.web.GlobalErrorHandler;
 import reactor.core.publisher.Mono;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -55,7 +56,7 @@ class ReplayControllerTest {
 
     @Test
     void validSinceZeroReturnsOk() {
-        when(replayService.replay("chan-1", "0"))
+        when(replayService.replay("chan-1", "0", 500))
                 .thenReturn(Mono.just(List.of(new ReplayedEvent("1000-0", "{\"ok\":true}", "2026-09-19T12:00:00Z"))));
 
         webTestClient.get()
@@ -66,12 +67,12 @@ class ReplayControllerTest {
                 .jsonPath("$[0].id").isEqualTo("1000-0")
                 .jsonPath("$[0].payload").isEqualTo("{\"ok\":true}");
 
-        verify(replayService).replay("chan-1", "0");
+        verify(replayService).replay("chan-1", "0", 500);
     }
 
     @Test
     void validSinceWithTimestampAndSequenceReturnsOk() {
-        when(replayService.replay("chan-1", "1725900000000-0"))
+        when(replayService.replay("chan-1", "1725900000000-0", 500))
                 .thenReturn(Mono.just(List.of()));
 
         webTestClient.get()
@@ -80,7 +81,7 @@ class ReplayControllerTest {
                 .expectStatus().isOk()
                 .expectBody().json("[]");
 
-        verify(replayService).replay("chan-1", "1725900000000-0");
+        verify(replayService).replay("chan-1", "1725900000000-0", 500);
     }
 
     @Test
@@ -94,7 +95,7 @@ class ReplayControllerTest {
                 .jsonPath("$.error").isEqualTo("Bad Request")
                 .jsonPath("$.message").isEqualTo("Invalid stream ID format: abc");
 
-        verify(replayService, never()).replay(any(), any());
+        verify(replayService, never()).replay(any(), any(), anyInt());
     }
 
     @Test
@@ -107,7 +108,7 @@ class ReplayControllerTest {
                 .jsonPath("$.status").isEqualTo(400)
                 .jsonPath("$.message").isEqualTo("Invalid stream ID format: 1000--5");
 
-        verify(replayService, never()).replay(any(), any());
+        verify(replayService, never()).replay(any(), any(), anyInt());
     }
 
     @Test
@@ -122,7 +123,7 @@ class ReplayControllerTest {
                 .jsonPath("$.status").isEqualTo(400)
                 .jsonPath("$.message").isEqualTo("Invalid stream ID format: +1000");
 
-        verify(replayService, never()).replay(any(), any());
+        verify(replayService, never()).replay(any(), any(), anyInt());
     }
 
     @Test
@@ -136,7 +137,7 @@ class ReplayControllerTest {
                 .jsonPath("$.status").isEqualTo(400)
                 .jsonPath("$.message").isEqualTo("Invalid stream ID format:  1000");
 
-        verify(replayService, never()).replay(any(), any());
+        verify(replayService, never()).replay(any(), any(), anyInt());
     }
 
     @Test
@@ -148,7 +149,7 @@ class ReplayControllerTest {
                 .expectBody()
                 .jsonPath("$.status").isEqualTo(400);
 
-        verify(replayService, never()).replay(any(), any());
+        verify(replayService, never()).replay(any(), any(), anyInt());
     }
 
     @Test
@@ -158,7 +159,7 @@ class ReplayControllerTest {
                 .exchange()
                 .expectStatus().isBadRequest();
 
-        verify(replayService, never()).replay(any(), any());
+        verify(replayService, never()).replay(any(), any(), anyInt());
     }
 
     @Test
@@ -173,6 +174,56 @@ class ReplayControllerTest {
                 .expectBody()
                 .jsonPath("$.status").isEqualTo(404);
 
-        verify(replayService, never()).replay(any(), any());
+        verify(replayService, never()).replay(any(), any(), anyInt());
+    }
+
+    @Test
+    void limitBelowMinimumReturns400() {
+        webTestClient.get()
+                .uri("/channels/chan-1/events?since=0&limit=0")
+                .exchange()
+                .expectStatus().isBadRequest()
+                .expectBody()
+                .jsonPath("$.status").isEqualTo(400)
+                .jsonPath("$.message").isEqualTo("limit must be between 1 and 5000 (received 0)");
+
+        verify(replayService, never()).replay(any(), any(), anyInt());
+    }
+
+    @Test
+    void limitAboveMaximumReturns400() {
+        webTestClient.get()
+                .uri("/channels/chan-1/events?since=0&limit=5001")
+                .exchange()
+                .expectStatus().isBadRequest()
+                .expectBody()
+                .jsonPath("$.status").isEqualTo(400)
+                .jsonPath("$.message").isEqualTo("limit must be between 1 and 5000 (received 5001)");
+
+        verify(replayService, never()).replay(any(), any(), anyInt());
+    }
+
+    @Test
+    void customValidLimitIsPassedThrough() {
+        when(replayService.replay("chan-1", "0", 25)).thenReturn(Mono.just(List.of()));
+
+        webTestClient.get()
+                .uri("/channels/chan-1/events?since=0&limit=25")
+                .exchange()
+                .expectStatus().isOk();
+
+        verify(replayService).replay("chan-1", "0", 25);
+    }
+
+    @Test
+    void maximumLimitAtBoundaryReturnsOk() {
+        when(replayService.replay("chan-1", "0", 5000)).thenReturn(Mono.just(List.of()));
+
+        webTestClient.get()
+                .uri("/channels/chan-1/events?since=0&limit=5000")
+                .exchange()
+                .expectStatus().isOk();
+
+        verify(replayService).replay("chan-1", "0", 5000);
     }
 }

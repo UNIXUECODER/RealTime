@@ -133,7 +133,45 @@ The second item of M6c addresses uncaught `NumberFormatException` and out-of-ran
   - `StreamIdsTest`: Expanded unit tests for canonical pattern rejection, negative sequences, explicit plus signs, extreme numbers, and year 294,276 AD Postgres limits.
 - **Full verification:** 133/133 backend tests and 12/12 frontend Vitest tests passing.
 
-Next: **F-07 / F-02 / F-20**.
+## M6c (Batch 3) — F-07, F-02 & F-20: Replay Pagination, Cold-First Budget, and Same-Millisecond Lower Bound Retention
+
+The third batch of the M6c pre-M7 hardening series addresses unbounded heap consumption in the Replay API (`Peer-Review.md` F-02), silent same-millisecond event dropping in cold archive queries (F-07), and missing service-tier regression test coverage for historical replay (F-20).
+
+- **Bounded Replay Pagination (`limit` query param, Spring Data `Pageable`, and Redis `COUNT`):**
+  - `ReplayController` now accepts `@RequestParam(defaultValue = "" + DEFAULT_LIMIT) int limit`, with `DEFAULT_LIMIT = 500` and `MAX_LIMIT = 5000`.
+  - Enforced fail-fast parameter validation: `limit < 1 || limit > MAX_LIMIT` throws `ResponseStatusException(HttpStatus.BAD_REQUEST, "limit must be between 1 and %d (received %d)")`. Following the project's "reject where written" convention, bad inputs are rejected with 400 rather than silently clamped to limits.
+  - Spring Data JPA repository queries in `ArchivedEventRepository` now accept `Pageable` parameters, invoked using `PageRequest.of(0, limit)`.
+  - Redis Stream reads in `ReplayService.hotRange` now cap entry consumption with `StreamReadOptions.empty().count(limit)`.
+- **Cold-First Pagination Budget & Airtight Boundary Tracking (`ColdSlice`):**
+  - Because events are strictly chronological, cold events are always older than hot events. In a split range (where `since < earliestHotId`), `ReplayService.replay` pulls up to `limit` events from Postgres cold archive first.
+  - **Airtight boundary tracking (`reachedBoundary`):** Previously, a naive `cold.size() >= limit` check meant that if SQL `PageRequest.of(0, limit)` returned a full page and the in-memory filter dropped `since`, `cold.size()` became `limit - 1`. That falsely triggered the fallback to `hotRange`, appending an event from the live Redis tail (e.g. `5000-0`) immediately after `1498-0` and permanently skipping thousands of archived events in Postgres.
+  - Structured `ColdSlice(events, exhausted, reachedBoundary)` now tracks whether Postgres was truly exhausted (`entities.size() < fetchSize`) or crossed `earliestHotId` (`entities.stream().anyMatch(e -> StreamIds.compare(e.getRedisStreamId(), earliestHotId) >= 0)`). If cold data has not reached the hot boundary, `hotRange` is **never called**, returning the cold page directly and allowing clients to continue paging cold data seamlessly.
+  - **Oversampling (`fetchSize = limit + extra`):** Added query oversampling based on `StreamIds.sequenceOf(since)` (`extra = Math.min(seq + 1, 100)`). Even when cursor rows with `id <= since` in the same millisecond are dropped by the sequence filter, the client consistently receives the exact requested `limit` rather than under-delivering by 1.
+  - Continuation model: Clients requesting subsequent pages supply `since` set to the last ID received from the prior page, preserving cursor-based pagination without requiring an offset scheme.
+- **Same-Millisecond Lower Bound Retention (`GreaterThanEqual`) & Deterministic Ordering:**
+  - Changed `ArchivedEventRepository.findByChannelIdAndReceivedAtGreaterThanOrderByReceivedAtAsc` to `findByChannelIdAndReceivedAtGreaterThanEqualOrderByReceivedAtAsc`.
+  - Because `ArchivedEvent.receivedAt` is an `Instant` (millisecond resolution in SQL), a strict SQL `>` dropped all same-millisecond events with sequence numbers $> 0$ (e.g., `1000-1`, `1000-2` when `since = 1000-0`).
+  - By querying `>= timestampOf(since)` in SQL and applying `StreamIds.compare(e.id(), since) > 0` in memory, the cursor itself is dropped while same-millisecond higher sequence events are correctly preserved.
+  - Added in-memory sorting via `.sorted((a, b) -> StreamIds.compare(a.getRedisStreamId(), b.getRedisStreamId()))`, guaranteeing strict, deterministic sequence order even if database engine ordering on identical timestamps is non-deterministic.
+  - Added companion method `StreamIds.sequenceOf(streamId)` symmetrical to `StreamIds.timestampOf(streamId)`.
+- **Service-Tier Regression Suite (`ReplayServiceTest`) & Mockito Stubbing Bugfix:**
+  - The patch introduced a Mockito `UnfinishedStubbingException` in `ReplayServiceTest.stubEarliestHotId` caused by calling `hotRecord()` inside an incomplete `when(...)` declaration. Fixed by instantiating the mock `MapRecord` prior to invoking `when()`.
+  - Added 9 comprehensive test cases in `ReplayServiceTest`:
+    - `coldAloneFillingLimitNeverQueriesHotRange`: verifies hot stream read is bypassed when cold fulfills the limit budget.
+    - `coldShortOfLimitFillsRemainderFromHot`: verifies remaining budget calculation and merge with hot tail when cold is exhausted.
+    - `noGapUsesHotOnlyAndNeverQueriesArchive`: verifies archive repository is never queried when `since >= earliestHotId`.
+    - `emptyHotStreamUsesColdOnlyWithGreaterThanEqualVariant`: verifies cold-only fallback when hot stream is empty.
+    - `sameMillisecondColdEventsWithHigherSequenceAreRetainedWhenHotStreamEmpty`: verifies same-millisecond sequence retention when hot stream is empty.
+    - `sameMillisecondColdEventsWithHigherSequenceAreRetainedWhenGapExists`: verifies same-millisecond sequence retention when gap exists.
+    - `coldNotExhaustedNeverCallsHotRangeEvenIfColdShortOfLimit`: strictly isolates `reachedBoundary`, verifying that even when `cold.size() < limit` due to same-ms cursor filtering, `hotRange` is never prematurely called on an unexhausted archive.
+    - `sameMillisecondEventsAreReturnedInStrictSequenceOrder`: verifies deterministic sequence ordering for same-millisecond events.
+    - `emptyChannelReturnsEmptyList`: verifies fresh channel edge where neither hot stream nor cold archive has data.
+  - Added 4 controller slice tests in `ReplayControllerTest`: boundary checks for `limit = 0`, `limit = 5001`, `limit = 25`, and `limit = 5000`.
+- **Full Verification Suite Passed:**
+  - Backend: 146/146 JUnit/Spring Boot integration tests passing.
+  - Frontend: 12/12 Vitest tests passing (`npm test` / `npx vitest run --no-isolate`).
+
+Next: **Pre-M7 wrap-up & triage review**.
 
 
 

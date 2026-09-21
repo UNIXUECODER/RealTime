@@ -5,6 +5,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.data.redis.connection.stream.ReadOffset;
 import org.springframework.data.redis.connection.stream.StreamOffset;
@@ -36,36 +38,42 @@ public class ReplayService {
         this.archiveRepository = archiveRepository;
     }
 
-    public Mono<List<ReplayedEvent>> replay(String channelId, String since) {
+    public Mono<List<ReplayedEvent>> replay(String channelId, String since, int limit) {
         String streamKey = "stream:channel:" + channelId;
 
         return earliestHotId(streamKey)
                 .flatMap(earliestHotIdOpt -> {
-                    Mono<List<ReplayedEvent>> hot = hotRange(streamKey, since);
-
                     if (earliestHotIdOpt.isEmpty()) {
                         // Hot stream is empty (trimmed entirely or never written).
                         // Serve completely from the Postgres archive.
-                        return coldRange(channelId, since, null);
+                        return coldRange(channelId, since, null, limit)
+                                .map(ColdSlice::events);
                     }
 
                     String earliestHotId = earliestHotIdOpt.get();
                     if (StreamIds.compare(since, earliestHotId) >= 0) {
                         // Nothing was trimmed before `since` — hot data alone covers it.
-                        return hot;
+                        return hotRange(streamKey, since, limit);
                     }
 
-                    // A gap exists between `since` and what the hot stream still has —
-                    // that trimmed slice must come from the archive instead.
-                    Instant until = StreamIds.timestampOf(earliestHotId);
-                    return coldRange(channelId, since, until)
-                            .map(cold -> cold.stream()
-                                    .filter(e -> StreamIds.compare(e.id(), earliestHotId) < 0)
-                                    .toList())
-                            .zipWith(hot, (cold, liveTail) -> {
-                                List<ReplayedEvent> combined = new ArrayList<>(cold);
-                                combined.addAll(liveTail);
-                                return combined;
+                    // A gap exists between `since` and what the hot stream still has. Cold-first
+                    // budget (M6c, F-02): events are strictly chronological, so cold is always
+                    // older than hot — pull up to `limit` from cold first, and only touch hot
+                    // (extra Redis I/O) if cold has reached the hot boundary and didn't fill the budget.
+                    // If cold has not reached the boundary, client continues paging cold without skipping.
+                    return coldRange(channelId, since, earliestHotId, limit)
+                            .flatMap(coldSlice -> {
+                                List<ReplayedEvent> cold = coldSlice.events();
+                                if (!coldSlice.reachedBoundary() || cold.size() >= limit) {
+                                    return Mono.just(cold);
+                                }
+
+                                return hotRange(streamKey, since, limit - cold.size())
+                                        .map(liveTail -> {
+                                            List<ReplayedEvent> combined = new ArrayList<>(cold);
+                                            combined.addAll(liveTail);
+                                            return combined;
+                                        });
                             });
                 });
     }
@@ -79,24 +87,42 @@ public class ReplayService {
                 .defaultIfEmpty(Optional.empty());
     }
 
-    private Mono<List<ReplayedEvent>> hotRange(String streamKey, String since) {
+    private Mono<List<ReplayedEvent>> hotRange(String streamKey, String since, int limit) {
         return redis.<String, String>opsForStream()
-                .read(StreamReadOptions.empty(), StreamOffset.create(streamKey, ReadOffset.from(since)))
+                .read(StreamReadOptions.empty().count(limit), StreamOffset.create(streamKey, ReadOffset.from(since)))
                 .map(this::toDto)
                 .collectList();
     }
 
-    private Mono<List<ReplayedEvent>> coldRange(String channelId, String since, Instant until) {
+    private record ColdSlice(List<ReplayedEvent> events, boolean exhausted, boolean reachedBoundary) {}
+
+    private Mono<ColdSlice> coldRange(String channelId, String since, String earliestHotId, int limit) {
         Instant sinceInstant = StreamIds.timestampOf(since);
+        Instant until = earliestHotId == null ? null : StreamIds.timestampOf(earliestHotId);
+        long seq = StreamIds.sequenceOf(since);
+        int extra = (int) Math.min(seq + 1, 100);
+        int fetchSize = limit + extra;
+        Pageable pageable = PageRequest.of(0, fetchSize);
 
         return Mono.fromCallable(() -> until == null
-                        ? archiveRepository.findByChannelIdAndReceivedAtGreaterThanOrderByReceivedAtAsc(channelId, sinceInstant)
-                        : archiveRepository.findByChannelIdAndReceivedAtBetweenOrderByReceivedAtAsc(channelId, sinceInstant, until))
+                        ? archiveRepository.findByChannelIdAndReceivedAtGreaterThanEqualOrderByReceivedAtAsc(channelId, sinceInstant, pageable)
+                        : archiveRepository.findByChannelIdAndReceivedAtBetweenOrderByReceivedAtAsc(channelId, sinceInstant, until, pageable))
                 .subscribeOn(Schedulers.boundedElastic())
-                .map(entities -> entities.stream()
-                        .map(this::toDto)
-                        .filter(e -> StreamIds.compare(e.id(), since) > 0)
-                        .toList());
+                .map(entities -> {
+                    boolean exhausted = entities.size() < fetchSize;
+                    boolean reachedBoundary = exhausted
+                            || (earliestHotId != null && entities.stream().anyMatch(e -> StreamIds.compare(e.getRedisStreamId(), earliestHotId) >= 0));
+
+                    List<ReplayedEvent> filtered = entities.stream()
+                            .filter(e -> StreamIds.compare(e.getRedisStreamId(), since) > 0)
+                            .filter(e -> earliestHotId == null || StreamIds.compare(e.getRedisStreamId(), earliestHotId) < 0)
+                            .sorted((a, b) -> StreamIds.compare(a.getRedisStreamId(), b.getRedisStreamId()))
+                            .limit(limit)
+                            .map(this::toDto)
+                            .toList();
+
+                    return new ColdSlice(filtered, exhausted, reachedBoundary);
+                });
     }
 
     private ReplayedEvent toDto(MapRecord<String, String, String> record) {

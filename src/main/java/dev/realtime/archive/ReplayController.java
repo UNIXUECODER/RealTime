@@ -23,10 +23,21 @@ import reactor.core.publisher.Mono;
  * <p>M6a adds tenant ownership verification (spec §10) — a plain {@code @RestController}
  * path, unlike the WebSocket handler, so an ordinary {@code Authorization: Bearer}
  * header works fine here; no query-param workaround needed.
+ *
+ * <p>M6c (F-02) adds {@code limit}: previously unbounded, so a single request spanning a
+ * large range could load the whole thing into heap. A client wanting more than one page
+ * just re-calls with {@code since} set to the last ID it received — the existing
+ * cursor-based model already supports this without an offset scheme.
  */
 @RestController
 @RequestMapping("/channels/{channelId}/events")
 public class ReplayController {
+
+    /** Page size when the client doesn't specify one. */
+    public static final int DEFAULT_LIMIT = 500;
+
+    /** Upper bound on requested page size — keeps one request from forcing an unbounded scan. */
+    public static final int MAX_LIMIT = 5000;
 
     private final ReplayService replayService;
     private final ChannelService channelService;
@@ -41,7 +52,8 @@ public class ReplayController {
     @GetMapping
     public Mono<List<ReplayedEvent>> replay(
             @PathVariable String channelId,
-            @RequestParam String since) {
+            @RequestParam String since,
+            @RequestParam(defaultValue = "" + DEFAULT_LIMIT) int limit) {
         return currentTenant.id()
                 .flatMap(tenantId -> channelService.requireOwnedChannel(tenantId, channelId))
                 .then(Mono.defer(() -> {
@@ -52,7 +64,15 @@ public class ReplayController {
                         String sanitized = since.length() > 50 ? since.substring(0, 50) + "..." : since;
                         throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid stream ID format: " + sanitized);
                     }
-                    return replayService.replay(channelId, since);
+                    // Write-time guard (F-02): rejected explicitly rather than silently
+                    // clamped, matching how every other bad-input case in this codebase
+                    // has been handled (filters, since above) — the client learns its
+                    // request was wrong instead of quietly getting a different one served.
+                    if (limit < 1 || limit > MAX_LIMIT) {
+                        throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                                "limit must be between 1 and %d (received %d)".formatted(MAX_LIMIT, limit));
+                    }
+                    return replayService.replay(channelId, since, limit);
                 }));
     }
 }

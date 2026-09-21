@@ -60,6 +60,11 @@ public final class StreamIds {
         }
     }
 
+    /** Extracts the sequence component of a stream ID. */
+    static long sequenceOf(String streamId) {
+        return parse(streamId)[1];
+    }
+
     private static long[] parse(String streamId) {
         if (!CANONICAL_PATTERN.matcher(streamId).matches()) {
             throw new NumberFormatException("Invalid stream ID format: " + streamId);

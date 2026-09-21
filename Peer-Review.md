@@ -23,12 +23,12 @@ process, docs.
 | ID | Title | Sev | Milestone | Status |
 |----|-------|-----|-----------|--------|
 | F-01 | `MAXLEN` safety cap never built — Redis OOM vector | Critical | M6c | Done (`0591d2e`) |
-| F-02 | Replay API unbounded — one request can OOM the server | Critical | M6c | Open |
+| F-02 | Replay API unbounded — one request can OOM the server | Critical | M6c | Done |
 | F-03 | No API key rotation; `revoked_at` is dead schema | Critical | M8 | Open |
 | F-04 | Auth endpoints unthrottled (bcrypt CPU DoS + brute force) | Critical | M8, first | Open — already in M8, priority raised |
 | F-05 | Shared Lettuce connection + `BLOCK` XREAD head-of-line risk | Critical | Verify pre-M7; fix M8/M10 | Open — needs verification |
 | F-06 | WS resume has no Postgres fallback — "gap-free" ends at the hot window | High | M8 | Open |
-| F-07 | `coldRange` exclusive lower bound drops same-ms events | High | M6c | Open |
+| F-07 | `coldRange` exclusive lower bound drops same-ms events | High | M6c | Done |
 | F-08 | Malformed `since`/`last_id` → 500 instead of 400 | High | M6c | Done |
 | F-09 | Null filter `field`/`value` → NPE on the ingest path | High | Pre-M6c | Done (`38a4987`) |
 | F-10 | Filter persistence orphaned — no milestone owns it; multi-instance incorrect | High | M8 | Open |
@@ -41,7 +41,7 @@ process, docs.
 | F-17 | M7 filter cost is multiplicative — needs parse-once refactor | High | M7 | Open |
 | F-18 | Slow-consumer buffer + `gap` frame (spec §9) unimplemented, untracked | High | M7 | Open |
 | F-19 | Frontend event list grows unbounded | Medium | With F-12 | Open |
-| F-20 | No `ReplayService`/`IngestService` regression tests | High | M6c | Open |
+| F-20 | No `ReplayService`/`IngestService` regression tests | High | M6c | Done |
 | F-21 | WS `?token=` will land in production access logs | Medium | M8 | Open |
 | F-22 | `ArchiveWriter` discards whole batch on single conflict | Medium | M8 | Open |
 | F-23 | Token revocation / password-change story undocumented | Medium | M8 (`SECURITY.md`) | Open — docs |
@@ -99,7 +99,7 @@ infrastructure (tickets, drain), or the M8 rate-limiting design.
 
 ### F-02 — Replay API unbounded — one request can OOM the server
 
-- **Severity:** Critical · **Recommended:** M6c · **Effort:** S · **Docs to update:** roadmap (note under replay/M6c)
+- **Severity:** Critical · **Recommended:** M6c · **Status:** Done · **Effort:** S · **Docs to update:** roadmap (note under replay/M6c)
 - **Description:** `hotRange` issues XREAD with no `COUNT`; `coldRange` loads an
   unbounded JPA `List`. `GET /events?since=0` on a busy channel pulls the entire
   archive into heap and serializes it as one JSON blob — accidental self-DoS, no
@@ -113,6 +113,7 @@ infrastructure (tickets, drain), or the M8 rate-limiting design.
      (fits the existing cursor model — no offset scheme needed).
 - **Acceptance:** `since=0` against a 1M-row archive returns ≤ max rows in
   < 1s with flat heap.
+- **Resolution:** Added `limit` query parameter to `ReplayController` (default `DEFAULT_LIMIT = 500`, max `MAX_LIMIT = 5000`), rejecting `limit < 1 || limit > 5000` with 400 Bad Request. In `ArchivedEventRepository`, added `Pageable` parameters to both queries (`findByChannelIdAndReceivedAtGreaterThanEqualOrderByReceivedAtAsc` and `findByChannelIdAndReceivedAtBetweenOrderByReceivedAtAsc`), passing `PageRequest.of(0, limit)`. Hot `XREAD` applies `StreamReadOptions.empty().count(limit)`. Implemented cold-first pagination budget in `ReplayService`: queries up to `limit` from cold archive first; if cold satisfies `limit`, hot Redis read is bypassed completely to eliminate unnecessary Redis I/O; if cold is short of `limit`, the remaining budget (`limit - cold.size()`) is queried from hot stream and merged. Cursor-based pagination allows clients to continue by passing `since` as the last received event ID. Fully verified with `ReplayControllerTest` and `ReplayServiceTest`.
 
 ### F-03 — No API key rotation; `revoked_at` is dead schema
 
@@ -192,7 +193,7 @@ infrastructure (tickets, drain), or the M8 rate-limiting design.
 
 ### F-07 — `coldRange` exclusive lower bound drops same-ms events
 
-- **Severity:** High · **Recommended:** M6c · **Effort:** XS · **Docs to update:** spec §14 item 3 (narrow or resolve)
+- **Severity:** High · **Recommended:** M6c · **Status:** Done · **Effort:** XS · **Docs to update:** spec §14 item 3 (narrow or resolve)
 - **Description:** The no-hot-data branch uses
   `findBy…ReceivedAtGreaterThan` (exclusive), but the in-memory
   `StreamIds.compare` filter downstream is already exact on both ends. Events in
@@ -205,6 +206,7 @@ infrastructure (tickets, drain), or the M8 rate-limiting design.
   filter do the exclusion. Cover with same-ms regression tests (see F-20).
 - **Acceptance:** same-ms boundary tests pass; §14 item 3 updated to reflect what
   (if anything) remains.
+- **Resolution:** Replaced `ArchivedEventRepository.findByChannelIdAndReceivedAtGreaterThanOrderByReceivedAtAsc` with `...GreaterThanEqual...`. Because SQL now retrieves rows matching `received_at >= timestampOf(since)`, events sharing the same millisecond timestamp with higher sequence numbers are retrieved from Postgres and preserved by `ReplayService`'s sequence-aware downstream filter (`filter(e -> StreamIds.compare(e.id(), since) > 0)`), which drops the cursor itself while retaining subsequent same-ms events. Verified with dedicated boundary tests in `ReplayServiceTest` (`sameMillisecondColdEventsWithHigherSequenceAreRetainedWhenHotStreamEmpty` and `sameMillisecondColdEventsWithHigherSequenceAreRetainedWhenGapExists`).
 
 ### F-08 — Malformed `since`/`last_id` → 500 instead of 400
 
@@ -397,7 +399,7 @@ infrastructure (tickets, drain), or the M8 rate-limiting design.
 
 ### F-20 — No `ReplayService`/`IngestService` regression tests
 
-- **Severity:** High · **Recommended:** M6c · **Effort:** S–M · **Docs to update:** none
+- **Severity:** High · **Recommended:** M6c · **Status:** Done · **Effort:** S–M · **Docs to update:** none
 - **Description:** The highest-risk logic has zero automated coverage: no
   `ReplayServiceTest`, no `IngestServiceTest`, no trimmer/handler tests. The
   replay boundary bug was found by hand-tracing — exactly what a regression test
@@ -408,6 +410,7 @@ infrastructure (tickets, drain), or the M8 rate-limiting design.
   filter→dedup→accept matrix with mocked Redis/store/writer.
 - **Acceptance:** boundary matrix green; a reintroduction of the M4 overlap bug
   fails loudly.
+- **Resolution:** Added comprehensive unit and live regression suites for both core services: `IngestServiceTest` (filter -> dedup -> accept pipeline, `MAXLEN ~` options verification, non-positive cap constructor guard) and `IngestServiceLiveRedisTest` (wire-level Redis trimming verification) in M6c Batch 1; and `ReplayServiceTest` (cold-first budget pagination, no-gap hot-only read, empty hot stream cold fallback, and same-millisecond sequence retention boundary tests) in M6c Batch 3. Replay controller slice coverage was similarly added in `ReplayControllerTest`.
 
 ---
 
