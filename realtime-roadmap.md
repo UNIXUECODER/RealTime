@@ -109,13 +109,25 @@ Each entry has four parts:
 
 ## M6b — Dashboard MVP
 
-**Ships:** Thymeleaf + HTMX pages: login, signup, channel list, channel detail (webhook URL, WS URL, masked API key, "send test event" button, live event panel).
+**Ships:** TypeScript SPA (Vite + React + Tailwind): login, signup, channel list, channel detail (webhook URL, WS URL, masked API key with suffix unmasking, "send test event" button, live event panel with JSON tree, latency, pause/resume). Backend additions: `POST /channels/{id}/test-event` endpoint, `key_suffix` on `ApiKey` / channel detail responses.
 
 **Explicitly not in scope:** Filter rule management UI, replay UI beyond a basic "show last N" button, polish/empty-states beyond functional. This is "usable," not "pretty."
 
 **Exit criteria:** A person with no prior explanation can sign up, create a channel, click "send test event," and watch it appear in the live panel — with you standing there saying nothing.
 
 **Depends on:** M6a.
+
+---
+
+## M6c — Pre-M7 Correctness Batch
+
+**Ships:** F-01 (`MAXLEN ~` cap on ingest `XADD`, configurable via `app.stream.maxlen`, default ~50k), F-02 (`limit` query param on `/channels/{id}/events` with Spring Data `Pageable` + Redis `COUNT`, default 500/max 5000, plus cold-first budget and boundary tracking), F-07 (`GreaterThanEqual` lower bound + sequence-aware filter and deterministic sequence ordering), F-08 (`StreamIds.isValid` format validation rejecting malformed cursors with 400 at HTTP and WS boundaries), F-20 (`ReplayServiceTest` boundary matrix, `IngestServiceTest` filter→dedup→accept matrix, live Redis trimming tests), F-30 (doc drift resolution across roadmap, spec schema, and §14 tracking). F-05 verified (Lettuce dedicated connection for blocking `XREAD` disproved head-of-line blocking hypothesis).
+
+**Explicitly not in scope:** UI filter management (M8c), WS resume Postgres fallback (M8c), slow-consumer outbound buffering (M7b).
+
+**Exit criteria:** Burst 200k events at one channel → Redis memory flat; `since=0` on a 1M-row archive → capped page, no OOM; malformed `since`/null filter field → 400, not 500; same-ms boundary tests pass; F-05 verdict recorded in spec §14.
+
+**Depends on:** M6b.
 
 ---
 
@@ -127,7 +139,7 @@ Each entry has four parts:
 
 **Exit criteria:** Two WS clients (or two dashboard tabs) connect to the same channel with different filters; send a mixed batch of events; confirm each client receives only the events matching its own filter.
 
-**Depends on:** M2, M3.
+**Depends on:** M6c.
 
 ---
 

@@ -171,7 +171,32 @@ The third batch of the M6c pre-M7 hardening series addresses unbounded heap cons
   - Backend: 146/146 JUnit/Spring Boot integration tests passing.
   - Frontend: 12/12 Vitest tests passing (`npm test` / `npx vitest run --no-isolate`).
 
-Next: **Pre-M7 wrap-up & triage review**.
+## M6c (Batch 4) — F-30 & F-05: Doc Drift Reconciliation, Spec §14 Alignment, and Lettuce Connection Verification
+
+The fourth and final batch of M6c resolves documentation drift (`Peer-Review.md` F-30), aligns the architecture specification tracking table (§14), empirically tests and resolves the Lettuce head-of-line blocking hypothesis (F-05), and formally closes out M6c and the entire M6 milestone.
+
+- **F-30 Doc Drift Reconciliation:**
+  - **`realtime-roadmap.md`:** Replaced the stale "Thymeleaf + HTMX" line in M6b's "Ships" section with the actual TypeScript SPA stack (Vite + React + Tailwind), incorporating the two backend additions (`POST /channels/{id}/test-event` and `key_suffix` on `ApiKey`). Formally inserted the **M6c — Pre-M7 Correctness Batch** entry between M6b and M7, updating M7's dependency pointer to M6c.
+  - **`realtime-architecture-spec.md` §7:** Updated the `api_keys` relational data model schema to include `key_suffix` (`api_keys (id, channel_id, key_hash, key_suffix, created_at, revoked_at)`) with documentation regarding 4-character suffix masking for dashboard display.
+  - **`realtime-architecture-spec.md` §14:**
+    - Re-pointed item 4 (filter rule storage) from M6b to M8 / M8c (F-10: persisted rules + Redis pub/sub invalidation cache).
+    - Added row 11 for F-01 (`Stream MAXLEN cap (§3)`), marked resolved in M6c (`0591d2e`).
+    - Added row 12 for F-05 (`Lettuce connection head-of-line blocking (§8)`), marked resolved as disproven by empirical measurement in M6c.
+    - Added row 13 for F-06 (`WS resume Postgres fallback (§3)`), marked open for M8 / M8c.
+    - Added row 14 for F-18 (`Slow-consumer buffering & gap frame (§9)`), marked open for M7 / M7b.
+  - **`Peer-Review.md`:** Marked F-30 as Done in the index and Section 4, marked M6c as completed in Section 5, and checked off all 6 items in the Section 6 spec tracking checklist.
+- **F-05 Live Verification (Empirical Disproof):**
+  - Evaluated the hypothesis that `XREAD BLOCK 15s` in `ChannelWebSocketHandler.poll` on the default shared Lettuce connection (`shareNativeConnection=true`) would stall concurrent ingest `XADD` operations behind blocked WebSocket readers.
+  - Executed live empirical benchmarking against the containerized stack (`realtime-app:latest`, Postgres, Redis):
+    - Baseline ingest webhook latency (0 WS sessions): p50 = 30.48ms, p95 = 48.84ms, p99 = 48.84ms.
+    - With 3 concurrent idle WS sessions continuously blocked in `XREAD BLOCK 15s`: p50 = 37.23ms, p95 = 69.69ms, p99 = 69.69ms. Latency remained flat; zero multi-second stalls.
+    - `redis-cli client list` inspection revealed the underlying mechanism: Spring Data Redis / Lettuce detects blocking stream reads and automatically provisions a dedicated TCP connection (`flags=b`) for each blocking reader. The shared native connection (`flags=N`) continues serving non-blocking ingest commands (`cmd=xadd`) concurrently and unimpeded.
+    - Recorded the verdict in `Peer-Review.md` (F-05 status updated to Verified / Disproven) and spec §14 row 12; no separate Lettuce connection factory is required.
+- **Milestone Completion:**
+  - All M6c pre-M7 hardening deliverables (F-01, F-02, F-07, F-08, F-09, F-20, F-30, and F-05 verification) are now completely implemented, verified, and reconciled across all project documentation.
+  - **M6c and M6 as a whole are complete and closed.**
+
+Next: **M7 (M7a: Per-Connection Filtering & Parse-Once Optimization; M7b: Slow-Consumer Handling)**.
 
 
 

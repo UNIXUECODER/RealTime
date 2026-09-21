@@ -26,7 +26,7 @@ process, docs.
 | F-02 | Replay API unbounded — one request can OOM the server | Critical | M6c | Done |
 | F-03 | No API key rotation; `revoked_at` is dead schema | Critical | M8 | Open |
 | F-04 | Auth endpoints unthrottled (bcrypt CPU DoS + brute force) | Critical | M8, first | Open — already in M8, priority raised |
-| F-05 | Shared Lettuce connection + `BLOCK` XREAD head-of-line risk | Critical | Verify pre-M7; fix M8/M10 | Open — needs verification |
+| F-05 | Shared Lettuce connection + `BLOCK` XREAD head-of-line risk | Critical | Verify pre-M7; fix M8/M10 | Verified in M6c — Disproven |
 | F-06 | WS resume has no Postgres fallback — "gap-free" ends at the hot window | High | M8 | Open |
 | F-07 | `coldRange` exclusive lower bound drops same-ms events | High | M6c | Done |
 | F-08 | Malformed `since`/`last_id` → 500 instead of 400 | High | M6c | Done |
@@ -46,7 +46,7 @@ process, docs.
 | F-22 | `ArchiveWriter` discards whole batch on single conflict | Medium | M8 | Open |
 | F-23 | Token revocation / password-change story undocumented | Medium | M8 (`SECURITY.md`) | Open — docs |
 | F-24 | Validation hardening batch (password, sizes, email, `CurrentTenant`) | Medium | M8 | Open |
-| F-25 – F-33 | Low/process/polish items (compact list, §3) | Low | Various | Open |
+| F-25 – F-33 | Low/process/polish items (compact list, §3) | Low | Various | Open (F-30 Done) |
 
 ---
 
@@ -150,7 +150,7 @@ infrastructure (tickets, drain), or the M8 rate-limiting design.
 
 ### F-05 — Shared Lettuce connection + `BLOCK` XREAD head-of-line risk
 
-- **Severity:** Critical *if confirmed* · **Recommended:** verify pre-M7; fix in M8/M10 · **Effort:** S–M · **Docs to update:** spec §14 (new row either way, with verdict)
+- **Severity:** Critical *if confirmed* · **Recommended:** verify pre-M7; fix in M8/M10 · **Status:** Verified in M6c (Disproven) · **Effort:** S–M · **Docs to update:** spec §14 (row 12 added)
 - **Description:** Every WS session runs `XREAD BLOCK 15s` through the default
   *shared* Lettuce connection (`shareNativeConnection=true`). On one TCP
   connection, a blocking command stalls every command behind it — idle WS clients
@@ -167,6 +167,7 @@ infrastructure (tickets, drain), or the M8 rate-limiting design.
      blocking reads; keep the shared template for ingest.
 - **Acceptance:** idle WS count (0 → 10) produces no measurable shift in ingest
   latency; verdict recorded in §14 regardless of outcome.
+- **Verification Verdict:** Live empirical testing in M6c disproved the head-of-line blocking hypothesis. Inspection of `redis-cli client list` revealed that Spring Data Redis / Lettuce automatically allocates a dedicated TCP connection (`flags=b`) for blocking stream read operations, while the shared connection (`flags=N`) continues executing ingest `XADD` commands independently. Latency measurements with 3 concurrently blocked WS sessions showed flat ingest timings (baseline p50 30.5ms / p99 48.8ms vs. 3-WS p50 37.2ms / p99 69.7ms). Recorded in spec §14 row 12; no dedicated connection factory needed.
 
 ---
 
@@ -479,7 +480,7 @@ infrastructure (tickets, drain), or the M8 rate-limiting design.
 | F-27 | M9 metric list misses the failure-mode metrics (archive lag, dedup-hit ratio, filter-drop rate, hot-vs-cold replay ratio, trim counts) | Extend the M9 metric list; archive-lag is the highest value (watches F-22/§14-item-9 failure modes) | M9 |
 | F-28 | M10 schedules Postgres backups but no restore drill | Document + run one restore to staging | M10 |
 | F-29 | Reconnects need jitter or every deploy causes a resume storm (N simultaneous XRANGEs; Postgres too once F-06 lands) | Jitter in F-12 client backoff; k6 resume-storm scenario in M10 | M10 (with F-12/F-13) |
-| F-30 | Doc drift: roadmap M6b still says "Thymeleaf + HTMX"; spec schema lacks `key_suffix`; §14 item 4 still points at M6b | Fix the three lines + add §14 rows for F-01/F-05/F-06/F-18 | M6c (docs, cheap) |
+| F-30 | Doc drift: roadmap M6b still says "Thymeleaf + HTMX"; spec schema lacks `key_suffix`; §14 item 4 still points at M6b | Fix the three lines + add §14 rows for F-01/F-05/F-06/F-18 | M6c (Done) |
 | F-31 | `docker compose up --build` doesn't serve the dashboard (Dockerfile never got the blueprint's Node stage) | Already deferred to M10 — just don't let the README quickstart and reality diverge silently until then | M10 (planned) |
 | F-32 | Entire project is one git commit; history doesn't reflect M0→M6b | Commit per milestone going forward (can't rewrite the past cheaply — start now) | Immediate / process |
 | F-33 | Channel delete is one click, no confirm; dashboard never calls the replay API (M6b implied "show last N") | Confirm dialog (XS); replay-history view → backlog/M11 | Backlog / M11 |
@@ -490,7 +491,7 @@ infrastructure (tickets, drain), or the M8 rate-limiting design.
 
 | Milestone | Gains from this doc | Notes |
 |-----------|---------------------|-------|
-| **M6c** (proposed, pre-M7) | F-01, F-02, F-07, F-08, F-09, F-20, F-30; F-05 verification | Small blocking-correctness batch; M6a precedent. Alternatively fold into M7 with separate exit criteria. |
+| **M6c** (completed, pre-M7) | F-01, F-02, F-07, F-08, F-09, F-20, F-30; F-05 verification | All items complete & verified. Small blocking-correctness batch; M6a precedent. |
 | **M7** Per-connection filtering | F-16 (design first), F-17, F-18 | M7 grows from 3 lines to a real milestone: sub-protocol spec + parse-once + slow-consumer handling. |
 | **M8** Rate limiting & hardening | F-03, F-04 (first), F-06, F-10, F-15 (scope decision), F-21, F-22, F-23, F-24; F-05 fix if verified | M8 becomes the security-correctness milestone: rotation + key-cache (§14-9, already triaged) + filter persistence + validation. Heaviest milestone — consider splitting if it balloons. |
 | **M9** Observability | F-12 (client half), F-25, F-26, F-27; F-19 with F-12 | M9 gains the failure-mode metrics that watch the failure modes this doc names. |
@@ -500,12 +501,12 @@ infrastructure (tickets, drain), or the M8 rate-limiting design.
 
 ## 6. Spec §14 rows to add (checklist for the triage pass)
 
-- [ ] F-01 (`MAXLEN` missing) → resolve when fixed
-- [ ] F-05 (shared-connection hypothesis) → record verdict either way
-- [ ] F-06 (WS cold fallback missing) → open until M8
-- [ ] F-18 (§9 slow-consumer handling missing) → open until M7
-- [ ] F-10 → re-point item 4 from M6b to M8
-- [ ] F-07 → narrow item 3 to whatever remains after the one-word fix
+- [x] F-01 (`MAXLEN` missing) → resolved in M6c (§14 row 11)
+- [x] F-05 (shared-connection hypothesis) → verified and disproven in M6c (§14 row 12)
+- [x] F-06 (WS cold fallback missing) → added as open until M8 (§14 row 13)
+- [x] F-18 (§9 slow-consumer handling missing) → added as open until M7 (§14 row 14)
+- [x] F-10 → re-pointed item 4 from M6b to M8 (§14 row 4)
+- [x] F-07 → narrowed item 3 to lower-bound same-ms retention resolved in M6c (§14 row 3)
 
 ## 7. Working this doc
 
