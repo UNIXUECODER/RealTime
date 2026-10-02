@@ -1,5 +1,6 @@
 package dev.realtime.live;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
@@ -13,14 +14,19 @@ import org.springframework.data.redis.connection.stream.StreamOffset;
 import org.springframework.data.redis.connection.stream.StreamReadOptions;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.stereotype.Component;
+import java.util.List;
+
 import org.springframework.web.reactive.socket.CloseStatus;
 import org.springframework.web.reactive.socket.WebSocketHandler;
 import org.springframework.web.reactive.socket.WebSocketMessage;
 import org.springframework.web.reactive.socket.WebSocketSession;
+import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.util.UriComponentsBuilder;
 
 import dev.realtime.archive.StreamIds;
 import dev.realtime.auth.ChannelAccessService;
+import dev.realtime.filter.FilterEngine;
+import dev.realtime.filter.FilterRule;
 
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -52,14 +58,20 @@ public class ChannelWebSocketHandler implements WebSocketHandler {
     private final ReactiveRedisTemplate<String, String> redis;
     private final ObjectMapper objectMapper;
     private final ChannelAccessService channelAccessService;
+    private final ConnectionFilterResolver connectionFilterResolver;
+    private final FilterEngine filterEngine;
 
     public ChannelWebSocketHandler(
             ReactiveRedisTemplate<String, String> redis,
             ObjectMapper objectMapper,
-            ChannelAccessService channelAccessService) {
+            ChannelAccessService channelAccessService,
+            ConnectionFilterResolver connectionFilterResolver,
+            FilterEngine filterEngine) {
         this.redis = redis;
         this.objectMapper = objectMapper;
         this.channelAccessService = channelAccessService;
+        this.connectionFilterResolver = connectionFilterResolver;
+        this.filterEngine = filterEngine;
     }
 
     @Override
@@ -88,13 +100,60 @@ public class ChannelWebSocketHandler implements WebSocketHandler {
             return session.close(new CloseStatus(4400, "Invalid last_id format"));
         }
 
+        List<FilterRule> connectionFilter;
+        try {
+            connectionFilter = connectionFilterResolver.resolve(queryParam(session, "filter"));
+        } catch (ResponseStatusException e) {
+            return session.close(new CloseStatus(4400, safeCloseReason(e.getReason())));
+        }
+
         String streamKey = "stream:channel:" + channelId;
 
         Flux<WebSocketMessage> outbound = tail(streamKey, lastId)
+                .filter(record -> filterEngine.matches(record.getValue().get("payload"), connectionFilter))
                 .map(this::toFrame)
                 .map(session::textMessage);
 
         return session.send(outbound);
+    }
+
+    static String safeCloseReason(String reason) {
+        if (reason == null || reason.isBlank()) {
+            return "Invalid filter";
+        }
+        byte[] utf8 = reason.getBytes(StandardCharsets.UTF_8);
+        if (utf8.length <= 123) {
+            return reason;
+        }
+        // RFC 6455 §5.5 caps control frame payloads at 125 bytes. With a 2-byte status code,
+        // the close reason has at most 123 UTF-8 bytes. Truncate at a safe Unicode code-point
+        // boundary to at most 120 UTF-8 bytes and append "..." (3 bytes -> total <= 123 bytes).
+        StringBuilder sb = new StringBuilder();
+        int byteCount = 0;
+        int i = 0;
+        while (i < reason.length()) {
+            int codePoint = reason.codePointAt(i);
+            int cpBytes = utf8ByteLength(codePoint);
+            if (byteCount + cpBytes > 120) {
+                break;
+            }
+            sb.appendCodePoint(codePoint);
+            byteCount += cpBytes;
+            i += Character.charCount(codePoint);
+        }
+        return sb.append("...").toString();
+    }
+
+    private static int utf8ByteLength(int codePoint) {
+        if (codePoint <= 0x7F) {
+            return 1;
+        } else if (codePoint <= 0x7FF) {
+            return 2;
+        } else if (codePoint <= 0xFFFF) {
+            return 3;
+        } else {
+            return 4;
+        }
     }
 
     private String channelIdFrom(WebSocketSession session) {

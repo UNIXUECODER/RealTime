@@ -131,15 +131,31 @@ Each entry has four parts:
 
 ---
 
-## M7 — Per-Connection Filtering
+## M7 — Connection-Level Handling
 
-**Ships:** WS Gateway accepts a filter (query param or post-connect control frame) using the same AND-only DSL as channel filters (spec §5), evaluated per-connection before emitting each frame.
+Divided into two focused deliverables: **M7a** (per-connection filtering and evaluation efficiency) and **M7b** (slow-consumer backpressure buffering and gap frames).
+
+### M7a — Per-Connection Filtering & Parse-Once Optimization (Shipped)
+
+**Ships:**
+- WS Gateway accepts `?filter=` URL query parameter encoding a JSON array of `{field, op, value}` filter rules (matching the spec §5 DSL).
+- Handshake-time validation via `ConnectionFilterResolver`, cleanly closing malformed or invalid filter requests with RFC 6455 application close code `4400` and truncated reason phrase (<= 120 bytes).
+- Parse-once refactor in `FilterEngine` (`parse(rawBody)` → `DocumentContext`, cached precompiled `JsonPath`s) to prevent multiplicative parsing overhead across concurrent subscribers.
+- End-to-end integration tests over real Netty WebSocket wire (`ChannelWebSocketIntegrationTest`) confirming isolation across concurrent filtered connections, mixed event batches, and close frame semantics.
 
 **Explicitly not in scope:** Persisting connection filters, OR/nested rule logic (named limitation, spec §5/§13).
 
-**Exit criteria:** Two WS clients (or two dashboard tabs) connect to the same channel with different filters; send a mixed batch of events; confirm each client receives only the events matching its own filter.
+**Exit criteria:** Two WS clients connect to the same channel with different filters; send a mixed batch of events; confirm each client receives only the events matching its own filter. Malformed filter rejects with 4400. *(Verified automated in `ChannelWebSocketIntegrationTest`)*.
 
 **Depends on:** M6c.
+
+### M7b — Slow-Consumer Buffering & Gap Frame (F-18)
+
+**Ships:** Bounded per-connection outbound buffer (~1,000 events) with drop-oldest policy and `{"type":"gap","dropped":N}` control frame emission on overflow per spec §9.
+
+**Exit criteria:** Slow client artificially throttled; verify fast client continues unaffected and slow client receives gap frame upon resumption.
+
+**Depends on:** M7a.
 
 ---
 

@@ -37,8 +37,8 @@ process, docs.
 | F-13 | No drain on deploy — every push drops all live connections | High | M10 prerequisite | Open |
 | F-14 | Production Redis requirements undocumented (`noeviction`, persistence) | High | M10 | Open |
 | F-15 | M8's HMAC item is the wrong feature — needs a scope decision | High | Before M8 starts | Open — decision, not code |
-| F-16 | M7's inbound control-frame protocol is undesigned | High | M7 planning | Open — design |
-| F-17 | M7 filter cost is multiplicative — needs parse-once refactor | High | M7 | Open |
+| F-16 | M7's inbound control-frame protocol is undesigned | High | M7a | Done (query param design chosen; spec §5 updated) |
+| F-17 | M7 filter cost is multiplicative — needs parse-once refactor | High | M7a | Done (`FilterEngine` parse-once & path cache) |
 | F-18 | Slow-consumer buffer + `gap` frame (spec §9) unimplemented, untracked | High | M7 | Open |
 | F-19 | Frontend event list grows unbounded | Medium | With F-12 | Open |
 | F-20 | No `ReplayService`/`IngestService` regression tests | High | M6c | Done |
@@ -341,7 +341,8 @@ infrastructure (tickets, drain), or the M8 rate-limiting design.
 
 ### F-16 — M7's inbound control-frame protocol is undesigned
 
-- **Severity:** High (design) · **Recommended:** M7 planning (before M7 code) · **Effort:** S (design) · **Docs to update:** roadmap M7 entry
+- **Severity:** High (design) · **Recommended:** M7 planning (before M7 code) · **Effort:** S (design) · **Docs to update:** roadmap M7 entry, spec §5
+- **Status:** **Done (M7a)**. Documented and resolved in `m7-connection-filtering-blueprint.md` §1: opted for URL query parameter (`?filter=`) rather than inbound control frames. Query parameters are known at handshake time before `tail()` ever starts, eliminating buffering race conditions and extra connection state. Malformed filters cleanly close the socket with application code `4400`.
 - **Description:** M7 offers "query param or post-connect control frame," but the
   handler is send-only (`session.send`, never `session.receive()` — verified).
   The control-frame option needs a designed sub-protocol: frame envelope, actions
@@ -357,6 +358,7 @@ infrastructure (tickets, drain), or the M8 rate-limiting design.
 ### F-17 — M7 filter cost is multiplicative — needs parse-once refactor
 
 - **Severity:** High · **Recommended:** M7 (part of the milestone, not M10 fallout) · **Effort:** S–M · **Docs to update:** roadmap M7 entry
+- **Status:** **Done (M7a)**. Implemented in `FilterEngine`: added `ConcurrentHashMap<String, JsonPath> pathCache` for precompiled JsonPaths, `parse(String rawBody)` returning `DocumentContext`, and `matchesDocument(DocumentContext, List<FilterRule>)`. Outbound filter pipelines parse the raw JSON string once and evaluate precompiled paths against the parsed document.
 - **Description:** `matches()` calls `JsonPath.read(rawBody, path)` per rule —
   re-parse + path recompile per rule per event. The build log deferred the
   controller-vs-engine double-parse as "marginal," but under M7 the cost becomes

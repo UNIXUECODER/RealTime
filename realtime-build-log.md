@@ -198,5 +198,44 @@ The fourth and final batch of M6c resolves documentation drift (`Peer-Review.md`
 
 Next: **M7 (M7a: Per-Connection Filtering & Parse-Once Optimization; M7b: Slow-Consumer Handling)**.
 
+---
+
+## M7a — Per-Connection Filtering & Parse-Once Optimization (F-16, F-17)
+
+This milestone implements per-connection WebSocket filtering according to `m7-connection-filtering-blueprint.md`, resolves review findings F-16 (transport mechanism selection) and F-17 (multiplicative parse cost optimization), and closes the pre-existing automated testing gap on `ChannelWebSocketHandler` with live wire integration tests.
+
+- **F-16 Transport Decision (Query Param vs. Control Frame):**
+  - Evaluated protocol alternatives from spec §5. Selected URL query parameter (`?filter=`) rather than an inbound control-frame protocol.
+  - Query parameters are evaluated during handshake negotiation before `tail()` reads the Redis stream, eliminating the race window where events could emit prior to filter receipt, and avoiding the need for complex pre-filter buffering queues.
+  - Transport format: URL-encoded JSON rule array (`[{"field":...,"op":...,"value":...}]`), parsed and validated against the channel filter DSL.
+- **RFC 6455 Close Framing & UTF-8 Byte Truncation:**
+  - Implemented `ConnectionFilterResolver` to handle URL decoding, Jackson deserialization, and `FilterEngine.validate(rules)` validation.
+  - If a filter is syntactically invalid JSON, non-array, missing required rule fields, or specifies an unsupported operator, the connection is closed with RFC 6455 application close code `4400` (Bad Request).
+  - **UTF-8 Byte Budget vs UTF-16 Character Count:** RFC 6455 §5.5 caps total control frame payloads at 125 bytes. Subtracting the 2-byte unsigned integer status code leaves at most **123 UTF-8 bytes** for the reason phrase. A naive UTF-16 character substring (`length() > 120 ? substring(0, 117) + "..." : reason`) blew the budget under multi-byte CJK or 4-byte emoji sequences. `ChannelWebSocketHandler.safeCloseReason` now traverses Unicode code points by UTF-8 byte weight, safely truncating to at most 120 UTF-8 bytes and appending ASCII `"..."` (3 bytes) for a guaranteed total $\le 123$ UTF-8 bytes without severing multi-byte sequences or surrogate pairs.
+  - **Root-Cause Input Bounding in `FilterEngine.validate`:** Added defense-in-depth bounds directly at the validation gate: `MAX_FIELD_LENGTH = 200`, `MAX_OP_LENGTH = 10`, and bounded message reflection (`displayField` $\le 60$ chars, `displayOp` $\le 10$ chars) preventing unbounded exception messages from propagating to close frames.
+- **F-17 Parse-Once Optimization & Precompiled Path Cache (`FilterEngine`):**
+  - Addressed multiplicative evaluation overhead ($E \times C \times R$ parses/sec) by refactoring `FilterEngine`:
+    - Added `ConcurrentHashMap<String, JsonPath> pathCache` to avoid recompiling JSONPaths across evaluations.
+    - Added `public DocumentContext parse(String rawBody)` and `public boolean matchesDocument(DocumentContext document, List<FilterRule> rules)`.
+    - Payloads are parsed exactly once into a Jayway `DocumentContext`, which is then evaluated against cached `JsonPath`s across multiple rules.
+    - Disambiguated method signatures (`matchesDocument` vs `matches`) to avoid compiler ambiguity with `null` literals in tests.
+  - **Intentional Behavior Change on Malformed Payloads:** Under legacy per-rule evaluation, an unparseable body caused `extract()` to swallow the exception and return `null`. Under inequality (`!=`), `!Objects.equals(null, rule.value())` evaluated to `true`, causing malformed payloads to trivially pass. In F-17, if `parse(rawBody)` returns `null`, `matches()` immediately returns `false` across all rules. Payloads fail closed: an unparseable body cannot satisfy any filter criteria (including `!=`). Although `JsonValidator` already guarantees valid JSON at ingest, pinning this down in `FilterEngine` eliminates caller dependency and is verified by `malformedRawBodyReturnsFalseEvenForInequalityRule`.
+- **Automated Netty Integration Suite (`ChannelWebSocketIntegrationTest`):**
+  - Closed the testing gap on `ChannelWebSocketHandler` flagged in its own Javadoc ("highest-risk code in the project... verify for real").
+  - Implemented `@SpringBootTest(webEnvironment = RANDOM_PORT)` using a real `ReactorNettyWebSocketClient` communicating over actual TCP/WebSocket wire.
+  - Verified 4 core scenarios:
+    1. Unfiltered connections receive every event.
+    2. Filtered connections receive only matching events.
+    3. Dual simultaneous clients on the same channel with distinct filters receiving a mixed event batch: confirmed strict isolation with zero cross-talk.
+    4. Malformed filter rejected with RFC 6455 close code `4400`.
+- **Vitest Windows Worker Timeout Resolution (`frontend/vite.config.ts`):**
+  - Diagnosed vitest run duration spikes (60s+ timeout on Windows due to `pool: 'threads'` worker initialization deadlocks).
+  - Updated `vite.config.ts` to `pool: 'forks'`, reducing execution duration from 60s+ to 8.09s across all 12 frontend tests.
+- **Full Verification Suite:**
+  - Backend: 177 tests passing across all 20 non-container test classes (12/12 `ChannelWebSocketHandlerTest`, 16/16 `ConnectionFilterResolverTest`, 32/32 `FilterEngineTest`, 4/4 `ChannelWebSocketIntegrationTest`).
+  - Frontend: 12/12 Vitest tests passing (`npm test` in 4.39s).
+
+Next: **M7b (Slow-Consumer Buffering & Gap Frame — F-18)**.
+
 
 

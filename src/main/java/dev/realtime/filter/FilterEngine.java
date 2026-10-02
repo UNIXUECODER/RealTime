@@ -1,8 +1,11 @@
 package dev.realtime.filter;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
+import com.jayway.jsonpath.DocumentContext;
 import com.jayway.jsonpath.InvalidPathException;
 import com.jayway.jsonpath.JsonPath;
 import com.jayway.jsonpath.PathNotFoundException;
@@ -12,9 +15,13 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.server.ResponseStatusException;
 
 /**
- * Evaluates a channel's filter rules (JSONPath-based, AND-combined) against a raw
- * webhook payload. An event passes only if it matches every rule — an empty rule list
- * always passes (no filter configured means accept everything), per spec §5.
+ * Evaluates a channel's or connection's filter rules (JSONPath-based, AND-combined)
+ * against a webhook payload. An event passes only if it matches every rule — an empty
+ * rule list always passes (no filter configured means accept everything), per spec §5.
+ *
+ * <p>M7a (F-17): Parses the JSON payload once per evaluation into a {@link DocumentContext}
+ * and caches compiled {@link JsonPath} instances, preventing $O(N \times R)$ string
+ * re-parsing and path re-compilation on Netty event-loop threads.
  */
 @Component
 public class FilterEngine {
@@ -22,18 +29,62 @@ public class FilterEngine {
     /** Maximum allowed filter rules per channel to prevent Netty event-loop CPU starvation. */
     public static final int MAX_RULES_PER_CHANNEL = 50;
 
+    /** Maximum allowed characters in a filter rule 'field' (JSONPath). */
+    public static final int MAX_FIELD_LENGTH = 200;
+
+    /** Maximum allowed characters in a filter rule 'op'. */
+    public static final int MAX_OP_LENGTH = 10;
+
     /**
      * The only operators v1 supports (spec §5/§13) — the single source of truth for
-     * both {@link #validate} (write time) and {@link #matches(String, FilterRule)}
-     * (evaluation time), so the two can never drift out of sync.
+     * both {@link #validate} (write time) and {@link #matches} (evaluation time), so the two
+     * can never drift out of sync.
      */
     private static final Set<String> SUPPORTED_OPS = Set.of("==", "!=");
 
+    /** Path cache for precompiled JsonPath expressions to eliminate compilation overhead per rule. */
+    private final Map<String, JsonPath> pathCache = new ConcurrentHashMap<>();
+
+    /**
+     * Parses a raw JSON string into a {@link DocumentContext} once. Returns {@code null}
+     * if {@code rawBody} is null, blank, or syntactically invalid JSON.
+     */
+    public DocumentContext parse(String rawBody) {
+        if (rawBody == null || rawBody.isBlank()) {
+            return null;
+        }
+        try {
+            return JsonPath.parse(rawBody);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * Evaluates rules against a raw JSON payload by parsing it once (F-17).
+     */
     public boolean matches(String rawBody, List<FilterRule> rules) {
         if (rules == null || rules.isEmpty()) {
             return true;
         }
-        return rules.stream().allMatch(rule -> matches(rawBody, rule));
+        DocumentContext document = parse(rawBody);
+        if (document == null) {
+            return false;
+        }
+        return matchesDocument(document, rules);
+    }
+
+    /**
+     * Evaluates rules against an already-parsed {@link DocumentContext} (F-17).
+     */
+    public boolean matchesDocument(DocumentContext document, List<FilterRule> rules) {
+        if (rules == null || rules.isEmpty()) {
+            return true;
+        }
+        if (document == null) {
+            return false;
+        }
+        return rules.stream().allMatch(rule -> matches(document, rule));
     }
 
     /**
@@ -64,16 +115,26 @@ public class FilterEngine {
             if (rule.field() == null || rule.field().isBlank()) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Filter rule 'field' must not be blank");
             }
+            if (rule.field().length() > MAX_FIELD_LENGTH) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "Filter rule 'field' exceeds maximum length of " + MAX_FIELD_LENGTH);
+            }
             String path = normalizePath(rule.field());
             try {
                 JsonPath.compile(path);
             } catch (InvalidPathException | IllegalArgumentException e) {
+                String displayField = rule.field().length() > 60
+                        ? rule.field().substring(0, 57) + "..."
+                        : rule.field();
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                        "Invalid JSONPath expression in filter rule 'field': " + rule.field());
+                        "Invalid JSONPath expression in filter rule 'field': " + displayField);
             }
             if (rule.op() == null || !SUPPORTED_OPS.contains(rule.op())) {
+                String displayOp = rule.op() == null
+                        ? "null"
+                        : (rule.op().length() > MAX_OP_LENGTH ? rule.op().substring(0, MAX_OP_LENGTH) + "..." : rule.op());
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                        "Unsupported filter operator '%s' — supported: %s".formatted(rule.op(), SUPPORTED_OPS));
+                        "Unsupported filter operator '%s' — supported: %s".formatted(displayOp, SUPPORTED_OPS));
             }
             if (rule.value() == null) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Filter rule 'value' must not be null");
@@ -81,11 +142,11 @@ public class FilterEngine {
         }
     }
 
-    private boolean matches(String rawBody, FilterRule rule) {
+    private boolean matches(DocumentContext document, FilterRule rule) {
         if (rule == null) {
             return false;
         }
-        Object actual = extract(rawBody, rule.field());
+        Object actual = extract(document, rule.field());
         String actualAsString = actual == null ? null : String.valueOf(actual);
 
         if (rule.op() == null || !SUPPORTED_OPS.contains(rule.op())) {
@@ -101,13 +162,14 @@ public class FilterEngine {
         };
     }
 
-    private Object extract(String rawBody, String field) {
-        if (rawBody == null || field == null || field.isBlank()) {
+    private Object extract(DocumentContext document, String field) {
+        if (document == null || field == null || field.isBlank()) {
             return null;
         }
         String path = normalizePath(field);
         try {
-            return JsonPath.read(rawBody, path);
+            JsonPath compiled = pathCache.computeIfAbsent(path, JsonPath::compile);
+            return document.read(compiled);
         } catch (Exception e) {
             // A missing field, malformed path, or evaluation failure is not an error — it
             // just means this rule doesn't match (or, for !=, that it trivially does),

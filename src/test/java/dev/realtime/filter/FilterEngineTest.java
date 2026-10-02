@@ -221,4 +221,92 @@ class FilterEngineTest {
         List<FilterRule> rules = java.util.Collections.singletonList(null);
         assertThat(engine.matches("{\"a\":1}", rules)).isFalse();
     }
+
+    @Test
+    void parseReturnsNullForNullOrBlankOrInvalidJson() {
+        assertThat(engine.parse(null)).isNull();
+        assertThat(engine.parse("")).isNull();
+        assertThat(engine.parse("   ")).isNull();
+        assertThat(engine.parse("{bad")).isNull();
+    }
+
+    @Test
+    void matchesDocumentEvaluatesPreparsedDocumentCorrectly() {
+        var document = engine.parse("{\"type\":\"payment.failed\",\"amount\":\"100\"}");
+        assertThat(document).isNotNull();
+
+        List<FilterRule> matching = List.of(
+                new FilterRule("type", "==", "payment.failed"),
+                new FilterRule("amount", "==", "100"));
+        assertThat(engine.matchesDocument(document, matching)).isTrue();
+
+        List<FilterRule> nonMatching = List.of(
+                new FilterRule("type", "==", "payment.failed"),
+                new FilterRule("amount", "==", "200"));
+        assertThat(engine.matchesDocument(document, nonMatching)).isFalse();
+    }
+
+    @Test
+    void matchesDocumentReturnsFalseForNullDocumentWhenRulesPresent() {
+        List<FilterRule> rules = List.of(new FilterRule("type", "==", "payment.failed"));
+        assertThat(engine.matchesDocument(null, rules)).isFalse();
+        assertThat(engine.matchesDocument(null, List.of())).isTrue();
+    }
+
+    @Test
+    void malformedRawBodyReturnsFalseEvenForInequalityRule() {
+        // F-17 deliberate behavior change: under parse-once, an unparseable raw body
+        // returns false immediately for any non-empty rule list, including '!=' rules.
+        // Previously, per-rule extract() swallowed parse errors and treated an unparseable
+        // body as a missing field (null), which trivially passed '!=' (!Objects.equals(null, rule.value())).
+        // Now, malformed payloads fail closed across all operators.
+        List<FilterRule> rules = List.of(new FilterRule("type", "!=", "payment.failed"));
+        assertThat(engine.matches("{invalid-json", rules)).isFalse();
+        assertThat(engine.matches("{bad", rules)).isFalse();
+        assertThat(engine.matches(null, rules)).isFalse();
+        assertThat(engine.matches("", rules)).isFalse();
+    }
+
+    @Test
+    void validateRejectsFieldExceedingMaxLengthWithBadRequest() {
+        String longField = "a".repeat(FilterEngine.MAX_FIELD_LENGTH + 1);
+        List<FilterRule> rules = List.of(new FilterRule(longField, "==", "val"));
+
+        assertThatThrownBy(() -> engine.validate(rules))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(ex -> {
+                    ResponseStatusException rse = (ResponseStatusException) ex;
+                    assertThat(rse.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+                    assertThat(rse.getReason()).contains("exceeds maximum length of " + FilterEngine.MAX_FIELD_LENGTH);
+                });
+    }
+
+    @Test
+    void validateTruncatesLongOperatorInErrorMessage() {
+        String longOp = "INVALID_OPERATOR_TOO_LONG";
+        List<FilterRule> rules = List.of(new FilterRule("type", longOp, "val"));
+
+        assertThatThrownBy(() -> engine.validate(rules))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(ex -> {
+                    ResponseStatusException rse = (ResponseStatusException) ex;
+                    assertThat(rse.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+                    assertThat(rse.getReason()).contains("Unsupported filter operator 'INVALID_OP...'");
+                });
+    }
+
+    @Test
+    void validateTruncatesLongMalformedFieldInErrorMessage() {
+        String malformedField = "$[invalid." + "x".repeat(100);
+        List<FilterRule> rules = List.of(new FilterRule(malformedField, "==", "val"));
+
+        assertThatThrownBy(() -> engine.validate(rules))
+                .isInstanceOf(ResponseStatusException.class)
+                .satisfies(ex -> {
+                    ResponseStatusException rse = (ResponseStatusException) ex;
+                    assertThat(rse.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+                    assertThat(rse.getReason()).contains("Invalid JSONPath expression in filter rule 'field': $[invalid.xxxxxxxx");
+                    assertThat(rse.getReason()).endsWith("...");
+                });
+    }
 }
