@@ -3,8 +3,10 @@ spring:
     name: realtime
   data:
     redis:
-      host: localhost # overridden to `redis` inside docker-compose via SPRING_DATA_REDIS_HOST
-      port: 6379
+      url: ${SPRING_DATA_REDIS_URL:}
+      host: ${SPRING_DATA_REDIS_HOST:localhost} # overridden to `redis` inside docker-compose via SPRING_DATA_REDIS_HOST
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+      password: ${SPRING_DATA_REDIS_PASSWORD:}
   codec:
     # Enforced as a clean 413 by GlobalErrorHandler (M3) rather than an unhandled error.
     max-in-memory-size: 256KB
@@ -15,9 +17,9 @@ spring:
     # lifecycle hooks.
     timeout-per-shutdown-phase: 20s
   datasource:
-    url: jdbc:postgresql://localhost:5432/realtime # overridden via SPRING_DATASOURCE_URL in docker-compose
-    username: realtime
-    password: realtime_dev_only # local dev only — replaced by Fly secrets in M10, matches docker-compose.yml
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/realtime} # overridden via SPRING_DATASOURCE_URL in docker-compose
+    username: ${SPRING_DATASOURCE_USERNAME:realtime}
+    password: ${SPRING_DATASOURCE_PASSWORD:realtime_dev_only} # local dev only — replaced by Fly secrets in M10, matches docker-compose.yml
   jpa:
     hibernate:
       ddl-auto: validate # Flyway owns schema changes; Hibernate just confirms the entity mapping matches
@@ -26,7 +28,7 @@ spring:
     enabled: true
 
 server:
-  port: 8080
+  port: ${PORT:8080}
   shutdown: graceful
 
 management:
